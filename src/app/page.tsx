@@ -558,12 +558,20 @@ export default function Home() {
                         {REGIONS.map((r) => {
                           const priceInfo = product.prices[r.key]
                           const hasPrice = priceInfo && priceInfo.price !== 'N/A'
+                          const domain = priceInfo?.domain || `amazon.${r.key === 'COM' ? 'com' : r.key.toLowerCase()}`
+                          const productUrl = `https://www.${domain}/dp/${product.asin}/`
                           return (
                             <td key={r.key} className="px-3 py-2.5">
                               {hasPrice ? (
-                                <span className="text-green-400 font-mono">
+                                <a
+                                  href={productUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-green-400 font-mono hover:text-green-300 hover:underline underline-offset-2 transition-colors cursor-pointer"
+                                  title={`Open on ${domain}`}
+                                >
                                   {priceInfo.priceDisplay}
-                                </span>
+                                </a>
                               ) : (
                                 <span className="text-gray-700">N/A</span>
                               )}
