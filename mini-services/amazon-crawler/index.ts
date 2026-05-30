@@ -1,8 +1,44 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+/**
+ * Amazon Crawler Mini-Service
+ * AOD-only price extraction for 5 Amazon regions
+ * Port: 3031
+ */
+
+export default {
+  port: 3031,
+  hostname: '0.0.0.0',
+  async fetch(req: Request): Promise<Response> {
+    const url = new URL(req.url)
+
+    if (url.pathname === '/api/crawl' && req.method === 'POST') {
+      try {
+        const body = await req.json() as { asin: string; regions?: string[] }
+        const { asin, regions } = body
+
+        if (!asin) {
+          return Response.json({ error: 'ASIN required' }, { status: 400 })
+        }
+
+        const regionList = regions || ['COM', 'EG', 'DE', 'SA', 'AE']
+        const results = await crawlAllRegions(asin, regionList)
+
+        return Response.json({ success: true, asin, results })
+      } catch (e) {
+        console.error('[Crawl Error]', e)
+        return Response.json({ error: String(e) }, { status: 500 })
+      }
+    }
+
+    if (url.pathname === '/health') {
+      return Response.json({ status: 'ok', service: 'amazon-crawler' })
+    }
+
+    return Response.json({ error: 'Not found' }, { status: 404 })
+  },
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// AOD CRAWLER — All prices from AOD buybox ONLY
+// CRAWL LOGIC — Direct fetch with browser-like headers
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 interface RegionConfig {
@@ -10,12 +46,13 @@ interface RegionConfig {
   region: string
   currency: string
   cookiePrefix: string
+  postalCode?: string
 }
 
 const REGIONS: Record<string, RegionConfig> = {
-  COM: { domain: 'amazon.com', region: 'COM', currency: 'USD', cookiePrefix: 'USD' },
+  COM: { domain: 'amazon.com', region: 'COM', currency: 'USD', cookiePrefix: 'USD', postalCode: '99950' },
   EG: { domain: 'amazon.eg', region: 'EG', currency: 'EGP', cookiePrefix: 'EGP' },
-  DE: { domain: 'amazon.de', region: 'DE', currency: 'EUR', cookiePrefix: 'EUR' },
+  DE: { domain: 'amazon.de', region: 'DE', currency: 'EUR', cookiePrefix: 'EUR', postalCode: '80331' },
   SA: { domain: 'amazon.sa', region: 'SA', currency: 'SAR', cookiePrefix: 'SAR' },
   AE: { domain: 'amazon.ae', region: 'AE', currency: 'AED', cookiePrefix: 'AED' },
 }
@@ -23,16 +60,6 @@ const REGIONS: Record<string, RegionConfig> = {
 const CURRENCY_SYMBOLS: Record<string, string> = {
   USD: '$', EUR: '€', GBP: '£', EGP: 'EGP ', SAR: 'SAR ', AED: 'AED ',
 }
-
-const AOD_NO_OFFER_PHRASES = [
-  'no featured offers available',
-  'currently unavailable',
-  'keine empfohlenen angebote',
-  'keine angebote verfügbar',
-  'derzeit nicht verfügbar',
-  'لا توجد عروض مميزة متاحة',
-  'غير متوفر حالياً',
-]
 
 function cleanText(text: string | null | undefined): string {
   if (!text) return ''
@@ -45,12 +72,22 @@ function isBlocked(html: string): boolean {
   return ['robot check', 'type the characters you see', 'dp-recaptcha'].some(s => lower.includes(s))
 }
 
+const AOD_NO_OFFER_PHRASES = [
+  'no featured offers available',
+  'no other sellers matching your location',
+  'currently unavailable',
+  'keine empfohlenen angebote',
+  'keine angebote verfügbar',
+  'derzeit nicht verfügbar',
+  'لا توجد عروض مميزة متاحة',
+  'غير متوفر حالياً',
+]
+
 function aodHasOffers(html: string): boolean {
   if (!html || isBlocked(html)) return false
 
+  // Check 1: Explicit "no offer" container IDs — these are definitive
   const lower = html.toLowerCase()
-
-  // Check 1: Explicit "no offer" container IDs
   if (
     lower.includes('aod-asin-no-offers') ||
     lower.includes('aod-no-offer') ||
@@ -60,7 +97,9 @@ function aodHasOffers(html: string): boolean {
     return false
   }
 
-  // Check 2: PRIMARY — If there's a price in buybox scope, there IS an offer
+  // Check 2: Must have price element inside buybox scopes
+  // The aod-pinned-offer or aod-offer-list must contain a-price
+  // This is the PRIMARY check — if there's a price in buybox, there IS an offer
   const hasPinnedPrice =
     (html.includes('aod-pinned-offer') || html.includes('aod-pinned-offer-wrapper')) &&
     html.includes('a-price')
@@ -69,11 +108,14 @@ function aodHasOffers(html: string): boolean {
     html.includes('aod-offer-list') &&
     html.includes('a-price')
 
+  // If we found prices in buybox scopes, there ARE offers
+  // Even if "no other sellers" text appears elsewhere in the HTML
   if (hasPinnedPrice || hasListPrice) {
     return true
   }
 
-  // Check 3: No prices found — check no-offer phrases as secondary
+  // Check 3: No prices found — check for no-offer phrases as secondary confirmation
+  // Only check these when NO prices were found, to avoid false negatives
   for (const phrase of AOD_NO_OFFER_PHRASES) {
     if (lower.includes(phrase)) return false
   }
@@ -139,10 +181,11 @@ function extractAodPrice(html: string, currency: string): { price: string; curre
     const fracMatch = html.match(/class="[^"]*a-price-fraction[^"]*"[^>]*>([^<]*)[<]/)
     const symMatch = html.match(/class="[^"]*a-price-symbol[^"]*"[^>]*>([^<]*)[<]/)
     const whole = wholeMatch[1].replace(/[,]/g, '').trim()
-    const fraction = fracMatch?.[1]?.trim() || '00'
+    const fraction = fracMatch?.[1].trim() || '00'
     if (whole && /^\d+$/.test(whole)) {
       const price = `${whole}.${fraction}`
-      const currencySym = symMatch?.[1]?.trim() || ''
+      const currencySym = symMatch?.[1].trim() || ''
+      // Determine currency from symbol
       let cur = currency
       if (currencySym === '$') cur = 'USD'
       else if (currencySym === '€') cur = 'EUR'
@@ -177,7 +220,7 @@ function extractProductInfoAod(html: string, asin: string): { name: string; imag
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWL ONE REGION
+// CRAWLER — fetch AOD directly for each region
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async function crawlRegion(asin: string, regionKey: string): Promise<{
@@ -211,11 +254,7 @@ async function crawlRegion(asin: string, regionKey: string): Promise<{
   }
 
   try {
-    const res = await fetch(aodUrl, {
-      headers,
-      redirect: 'follow',
-      signal: AbortSignal.timeout(30000),
-    })
+    const res = await fetch(aodUrl, { headers, redirect: 'follow', signal: AbortSignal.timeout(30000) })
     const html = await res.text()
 
     if (res.status !== 200 || isBlocked(html)) {
@@ -253,98 +292,11 @@ async function crawlRegion(asin: string, regionKey: string): Promise<{
   }
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// API ROUTE
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json()
-    const { asin, asins, regions } = body
-
-    const asinList: string[] = asins || (asin ? [asin] : [])
-    const regionKeys: string[] = regions || ['COM', 'EG', 'DE', 'SA', 'AE']
-
-    if (asinList.length === 0) {
-      return NextResponse.json({ error: 'No ASIN provided' }, { status: 400 })
-    }
-
-    const allResults = []
-
-    for (const a of asinList) {
-      const cleanAsin = a.trim().toUpperCase()
-
-      if (!/^[A-Z0-9]{10}$/.test(cleanAsin)) {
-        allResults.push({ asin: cleanAsin, error: 'Invalid ASIN format', results: [] })
-        continue
-      }
-
-      // Crawl all regions in parallel
-      const crawlResults = await Promise.all(
-        regionKeys.map(r => crawlRegion(cleanAsin, r))
-      )
-
-      // Save to database
-      let product = await db.product.findUnique({ where: { asin: cleanAsin } })
-
-      if (!product) {
-        const mainResult = crawlResults.find(r => r.name !== `Product ${cleanAsin}`) || crawlResults[0]
-        product = await db.product.create({
-          data: {
-            asin: cleanAsin,
-            name: mainResult?.name || `Product ${cleanAsin}`,
-            image: mainResult?.image || '',
-          },
-        })
-      } else {
-        const mainResult = crawlResults.find(r => r.name !== `Product ${cleanAsin}`)
-        if (mainResult) {
-          await db.product.update({
-            where: { id: product.id },
-            data: {
-              name: mainResult.name,
-              image: mainResult.image || product.image,
-              updatedAt: new Date(),
-            },
-          })
-        }
-      }
-
-      // Save/update prices for each region
-      for (const result of crawlResults) {
-        await db.price.upsert({
-          where: {
-            productId_domain: {
-              productId: product.id,
-              domain: result.domain,
-            },
-          },
-          create: {
-            productId: product.id,
-            domain: result.domain,
-            region: result.region,
-            price: result.price,
-            currency: result.currency,
-            priceDisplay: result.priceDisplay,
-          },
-          update: {
-            price: result.price,
-            currency: result.currency,
-            priceDisplay: result.priceDisplay,
-            updatedAt: new Date(),
-          },
-        })
-      }
-
-      allResults.push({ asin: cleanAsin, results: crawlResults })
-    }
-
-    return NextResponse.json({ success: true, data: allResults })
-  } catch (e) {
-    console.error('[Crawl API Error]:', e)
-    return NextResponse.json(
-      { error: 'Crawl failed', details: String(e) },
-      { status: 500 }
-    )
-  }
+async function crawlAllRegions(asin: string, regions: string[]) {
+  // Crawl all regions in parallel
+  const promises = regions.map(r => crawlRegion(asin, r))
+  return Promise.all(promises)
 }
+
+// Start server
+console.log(`🚀 Amazon Crawler service running on port 3031`)

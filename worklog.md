@@ -34,3 +34,23 @@ Stage Summary:
 - Database: SQLite with Product + Price tables
 - API: crawl, products (CRUD), export CSV
 - UI: sidebar, header with live status, ASIN input, results table with 5 region columns
+
+---
+Task ID: 3
+Agent: Main Agent
+Task: Fix crawler - replace page_reader with direct fetch, fix AOD price extraction
+
+Work Log:
+- Discovered page_reader (z-ai-web-dev-sdk) cannot scrape Amazon pages - 502/504 errors
+- Tested direct fetch to Amazon AOD endpoints - works for EG, SA, AE regions
+- Found bug in aodHasOffers(): "no other sellers matching your location" phrase was checked before price elements, causing false negatives for EG and SA
+- Fixed aodHasOffers(): now checks for price elements FIRST, only falls back to no-offer phrases if no prices found
+- Tried mini-service approach (port 3031) but it kept dying and Next.js had ECONNREFUSED
+- Moved all crawl logic directly into the Next.js API route (/api/crawl/route.ts) for reliability
+- Regions EG, SA, AE return real AOD prices; COM and DE are blocked by Amazon (503)
+
+Stage Summary:
+- Crawler now works with direct fetch for EG (EGP 2800), SA (SAR 200.84), AE (AED 165)
+- COM and DE return N/A due to Amazon anti-bot measures (503 on AOD endpoint)
+- AOD-only price extraction verified working - no fallbacks, no ATC, no alternatives
+- All prices stored in SQLite via Prisma
