@@ -7,10 +7,10 @@ import type { CrawlResult } from '@/lib/aod-crawler'
 // AOD CRAWLER API
 //
 // Two modes:
-// 1. { asin, asins, regions }: Crawl ASIN(s) via Scrapling service, save results
+// 1. { asin, asins, regions, crawleoApiKey }: Crawl ASIN(s) via Crawleo API, save results
 // 2. { asin, results }: Save pre-crawled results to DB (from frontend)
 //
-// Uses Scrapling Python service to scrape real Amazon AOD prices.
+// Uses Crawleo API to scrape real Amazon AOD prices with correct geolocation.
 // Prices come from AOD ONLY. If AOD has no offers → return N/A.
 // Regions are processed SEQUENTIALLY with delays to avoid rate limits.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -30,19 +30,23 @@ interface CrawlResultItem {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { asin, asins, regions, results: preCrawledResults, scrapeDoToken } = body
+    const { asin, asins, regions, results: preCrawledResults, crawleoApiKey } = body
 
     // ── Mode 2: Save pre-crawled results directly ──
     if (preCrawledResults && Array.isArray(preCrawledResults) && asin) {
       return await saveResults(asin, preCrawledResults)
     }
 
-    // ── Mode 1: Trigger crawl via Scrapling service ──
+    // ── Mode 1: Trigger crawl via Crawleo API ──
     const asinList: string[] = asins || (asin ? [asin] : [])
     const regionKeys: string[] = regions || Object.keys(REGIONS)
 
     if (asinList.length === 0) {
       return NextResponse.json({ error: 'No ASIN provided' }, { status: 400 })
+    }
+
+    if (!crawleoApiKey) {
+      return NextResponse.json({ error: 'Crawleo API key is required' }, { status: 400 })
     }
 
     const allResults: { asin: string; results?: CrawlResultItem[]; error?: string }[] = []
@@ -62,7 +66,7 @@ export async function POST(request: NextRequest) {
 
       for (const regionKey of regionKeys) {
         console.log(`[Crawl API] Crawling ${cleanAsin} on ${regionKey}...`)
-        const result = await crawlRegion(cleanAsin, regionKey, scrapeDoToken)
+        const result = await crawlRegion(cleanAsin, regionKey, crawleoApiKey)
         crawlResults.push(result)
         console.log(`[Crawl API] ${cleanAsin} on ${regionKey}: price=${result.price} display=${result.priceDisplay}`)
 

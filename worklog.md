@@ -261,3 +261,33 @@ Stage Summary:
 - User needs to add their scrape.do token in the dashboard to get correct prices
 - Without token, Scrapling Fetcher is used (prices may differ by IP)
 - Token is stored in browser localStorage and passed with each crawl request
+---
+Task ID: 1
+Agent: Main Agent
+Task: Switch from Scrapling to Crawleo API for Amazon AOD price fetching
+
+Work Log:
+- Analyzed Crawleo API documentation at https://docs.crawleo.dev/api-reference/endpoint/crawler
+- Tested Crawleo API directly with curl - confirmed it returns correct prices:
+  - DE: €10.63 ✅ (was wrong €8.93 with Scrapling)
+  - COM: N/A ✅
+  - SA: SAR 113.38 ✅
+  - AE: AED 76.38 ✅
+  - EG: N/A ✅
+- Crawleo API: GET https://api.crawleo.dev/crawl?url={encoded_url} with x-api-key header
+- Response includes enhanced_html and markdown of the rendered page
+- First attempted direct TypeScript fetch from Next.js API route - server crashed due to external fetch
+- Rewrote Python script (mini-services/scrapling-service/scrape.py) to use Crawleo API via urllib
+- Updated aod-crawler.ts to use Python subprocess with Crawleo API key
+- Updated frontend to use crawleoApiKey instead of scrapeDoToken
+- Fixed regex bug: \d{3}* → \d{3})* in price extraction patterns
+- Fixed name extraction: truncate at rating patterns instead of taking entire markdown line
+- Added retry logic to Crawleo API calls
+- All 5 regions verified working with correct prices from AOD
+
+Stage Summary:
+- Successfully switched from Scrapling to Crawleo API
+- DE price now correctly returns €10.63 (was €8.93 with Scrapling)
+- All 5 regions return correct AOD prices
+- Python subprocess approach is more stable than direct fetch in Next.js
+- API key parameter: crawleoApiKey (stored in localStorage as crawleo_api_key)

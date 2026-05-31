@@ -1,9 +1,9 @@
 /**
- * Amazon AOD Price Crawler — Using Scrapling Python Service
+ * Amazon AOD Price Crawler — Using Crawleo API via Python Subprocess
  *
  * ALL prices come from AOD (All Offers Display) ONLY.
- * Uses a Python script (Scrapling library) via subprocess to fetch
- * AOD AJAX pages and extract real prices from the HTML.
+ * Uses a Python script to call Crawleo API (https://api.crawleo.dev/crawl)
+ * to fetch AOD AJAX pages with JavaScript rendering and correct geolocation.
  *
  * CRITICAL RULES:
  * - Prices MUST come from AOD AJAX endpoint ONLY
@@ -64,7 +64,7 @@ export const REGIONS: Record<string, RegionConfig> = {
   },
 }
 
-// Path to the Scrapling Python script
+// Path to the Python crawler script
 const SCRAPE_SCRIPT = path.join(process.cwd(), 'mini-services', 'scrapling-service', 'scrape.py')
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -76,32 +76,32 @@ export interface CrawlResult {
   region: string
   name: string
   image: string
-  price: string       // numeric like "8.93" or "N/A"
+  price: string       // numeric like "10.63" or "N/A"
   currency: string    // "EUR", "USD", etc.
-  priceDisplay: string // formatted like "€8.93" or "N/A"
+  priceDisplay: string // formatted like "€10.63" or "N/A"
   asin: string
   error?: string
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWL ONE REGION — Calls Scrapling Python Script
+// CRAWL ONE REGION — Calls Python Script (Crawleo API)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /**
- * Crawl a single ASIN on a single region using the Scrapling Python script.
+ * Crawl a single ASIN on a single region using the Python script
+ * that calls the Crawleo API.
  *
- * The Python script uses the Scrapling library to:
+ * The Python script uses the Crawleo API to:
  * 1. Fetch the AOD AJAX endpoint: /gp/product/ajax/aodAjaxMain/?asin={ASIN}
- * 2. Parse the HTML using CSS selectors
- * 3. Extract price from accessibility labels (most reliable)
- * 4. Fall back to visual price parts (symbol + whole + fraction)
+ * 2. Parse the markdown/HTML response for prices
+ * 3. Extract price from various patterns (€10,63, $20.25, SAR 113.38, etc.)
  *
  * Prices come from AOD ONLY. If no offers → N/A.
  */
 export async function crawlRegion(
   asin: string,
   regionKey: string,
-  scrapeDoToken?: string
+  crawleoApiKey?: string
 ): Promise<CrawlResult> {
   const region = REGIONS[regionKey]
   if (!region) {
@@ -129,34 +129,32 @@ export async function crawlRegion(
     asin,
   }
 
-  try {
-    console.log(`[crawlRegion] Scraping ${asin} on ${region.domain} via Scrapling...`)
+  if (!crawleoApiKey) {
+    return { ...na, error: 'Crawleo API key is required' }
+  }
 
-    // Call the Python Scrapling script
-    // Pass SCRAPE_DO_TOKEN env var for geolocation-based fetching
-    const env = { ...process.env }
-    if (scrapeDoToken) {
-      env.SCRAPE_DO_TOKEN = scrapeDoToken
-    }
+  try {
+    console.log(`[crawlRegion] Crawling ${asin} on ${region.domain} via Crawleo...`)
+
+    // Call the Python script with ASIN, region, and Crawleo API key
     const result = await new Promise<CrawlResult>((resolve) => {
       execFile(
         'python3',
-        [SCRAPE_SCRIPT, asin, regionKey],
-        { timeout: 90000, maxBuffer: 10 * 1024 * 1024, env },
+        [SCRAPE_SCRIPT, asin, regionKey, crawleoApiKey],
+        { timeout: 90000, maxBuffer: 10 * 1024 * 1024 },
         (error, stdout, stderr) => {
           if (error && !stdout) {
-            console.error(`[crawlRegion] Scrapling script error: ${error.message}`)
+            console.error(`[crawlRegion] Script error: ${error.message}`)
             console.error(`[crawlRegion] stderr: ${stderr?.slice(0, 500)}`)
-            resolve({ ...na, error: `Scrapling error: ${error.message}` })
+            resolve({ ...na, error: `Crawler error: ${error.message}` })
             return
           }
 
           try {
-            // Parse JSON from stdout (skip any non-JSON lines like warnings)
+            // Parse JSON from stdout (skip any non-JSON lines)
             const lines = stdout.trim().split('\n')
-            let jsonLine = lines[lines.length - 1] // Last line should be JSON
+            let jsonLine = lines[lines.length - 1]
 
-            // Find the JSON line (starts with {)
             for (const line of lines) {
               if (line.trim().startsWith('{')) {
                 jsonLine = line.trim()
@@ -178,7 +176,7 @@ export async function crawlRegion(
               error: data.error || undefined,
             })
           } catch (parseError) {
-            console.error(`[crawlRegion] Failed to parse Scrapling output: ${parseError}`)
+            console.error(`[crawlRegion] Failed to parse output: ${parseError}`)
             console.error(`[crawlRegion] stdout: ${stdout?.slice(0, 500)}`)
             resolve({ ...na, error: `Parse error: ${String(parseError)}` })
           }
@@ -206,12 +204,12 @@ export async function crawlRegion(
 export async function crawlAsin(
   asin: string,
   regionKeys: string[] = Object.keys(REGIONS),
-  scrapeDoToken?: string
+  crawleoApiKey?: string
 ): Promise<CrawlResult[]> {
   const results: CrawlResult[] = []
 
   for (const key of regionKeys) {
-    const result = await crawlRegion(asin, key, scrapeDoToken)
+    const result = await crawlRegion(asin, key, crawleoApiKey)
     results.push(result)
 
     // Small delay between regions to avoid rate limiting

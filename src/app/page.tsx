@@ -72,7 +72,7 @@ export default function Home() {
   const [crawlLog, setCrawlLog] = useState<LogEntry[]>([])
   const [crawlCurrent, setCrawlCurrent] = useState(0)
   const [crawlTotal, setCrawlTotal] = useState(0)
-  const [scrapeDoToken, setScrapeDoToken] = useState('')
+  const [crawleoApiKey, setCrawleoApiKey] = useState('')
   const abortRef = useRef(false)
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -84,16 +84,16 @@ export default function Home() {
 
   const { toast } = useToast()
 
-  // Load scrape.do token from localStorage
+  // Load Crawleo API key from localStorage
   useEffect(() => {
-    const savedToken = localStorage.getItem('scrape_do_token') || ''
-    setScrapeDoToken(savedToken)
+    const savedKey = localStorage.getItem('crawleo_api_key') || ''
+    setCrawleoApiKey(savedKey)
   }, [])
 
-  // Save token to localStorage when it changes
-  const handleTokenChange = (token: string) => {
-    setScrapeDoToken(token)
-    localStorage.setItem('scrape_do_token', token)
+  // Save API key to localStorage when it changes
+  const handleApiKeyChange = (key: string) => {
+    setCrawleoApiKey(key)
+    localStorage.setItem('crawleo_api_key', key)
   }
 
   // Update clock
@@ -225,7 +225,7 @@ export default function Home() {
           const res = await fetch('/api/crawl', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ asins: [asin], regions: [regionKey], scrapeDoToken: scrapeDoToken || undefined }),
+            body: JSON.stringify({ asins: [asin], regions: [regionKey], crawleoApiKey: crawleoApiKey || undefined }),
           })
 
           const data = await res.json()
@@ -596,7 +596,7 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* scrape.do Token for geo-based prices */}
+                  {/* Crawleo API Key for AOD page fetching */}
                   <div className="flex items-center gap-2">
                     <div className="flex-1 relative">
                       <div className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600">
@@ -604,19 +604,19 @@ export default function Home() {
                       </div>
                       <input
                         type="password"
-                        value={scrapeDoToken}
-                        onChange={(e) => handleTokenChange(e.target.value)}
-                        placeholder="scrape.do API Token (for correct geo-based prices)"
+                        value={crawleoApiKey}
+                        onChange={(e) => handleApiKeyChange(e.target.value)}
+                        placeholder="Crawleo API Key (required for fetching AOD prices)"
                         className="w-full bg-[#0a0a0a] border border-[#2a2a2a] text-gray-200 placeholder-gray-600 text-[10px] font-mono pl-8 pr-3 py-1.5 rounded-md focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 focus:outline-none"
                       />
                     </div>
-                    {scrapeDoToken ? (
+                    {crawleoApiKey ? (
                       <span className="text-[9px] text-green-400 shrink-0 flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" /> GEO
+                        <CheckCircle2 className="w-3 h-3" /> API
                       </span>
                     ) : (
-                      <span className="text-[9px] text-yellow-500 shrink-0" title="Without scrape.do token, prices may differ by server IP location">
-                        NO GEO
+                      <span className="text-[9px] text-red-500 shrink-0" title="Crawleo API key is required to fetch AOD prices">
+                        NO KEY
                       </span>
                     )}
                   </div>
