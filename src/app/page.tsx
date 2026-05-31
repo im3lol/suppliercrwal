@@ -155,7 +155,7 @@ export default function Home() {
       second: '2-digit',
     })
 
-  // ── Bulk Crawl Handler (FOR LOOP — sequential per ASIN) ──
+  // ── Bulk Crawl Handler (ONE request per ASIN with all 5 regions) ──
   const handleBulkCrawl = async () => {
     const asins = asinInput
       .split(/[\n,;\s]+/)
@@ -168,6 +168,15 @@ export default function Home() {
       toast({
         title: 'No valid ASINs',
         description: 'Enter ASINs (10 alphanumeric chars), one per line or comma-separated',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    if (!crawleoApiKey) {
+      toast({
+        title: 'API Key Required',
+        description: 'Enter your Crawleo API key to fetch AOD prices',
         variant: 'destructive',
       })
       return
@@ -207,72 +216,59 @@ export default function Home() {
 
       setCrawlLog((prev) =>
         prev.map((entry, idx) =>
-          idx === i ? { ...entry, status: 'running', message: 'Scanning 5 regions (sequential)...', time: ts() } : entry
+          idx === i ? { ...entry, status: 'running', message: 'Scanning 5 regions via Crawleo API...', time: ts() } : entry
         )
       )
 
       try {
-        // Process regions one at a time to keep each crawl execution short
-        // and prevent memory issues with Chromium
-        const regionKeys = ['COM', 'EG', 'DE', 'SA', 'AE']
-        let pricesFound = 0
-        let lastError = ''
+        // Send ALL 5 regions in a single request — the backend processes them sequentially
+        // This is more reliable than 5 separate requests (avoids server crashes, timeouts)
+        const res = await fetch('/api/crawl', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            asins: [asin],
+            regions: ['COM', 'EG', 'DE', 'SA', 'AE'],
+            crawleoApiKey,
+          }),
+        })
 
-        for (let ri = 0; ri < regionKeys.length; ri++) {
-          if (abortRef.current) break
+        const data = await res.json()
 
-          const regionKey = regionKeys[ri]
-          setCrawlLog((prev) =>
-            prev.map((entry, idx) =>
-              idx === i ? { ...entry, status: 'running', message: `Scanning ${regionKey} (${ri + 1}/5)...`, time: ts() } : entry
-            )
-          )
+        if (data.success && data.data && data.data.length > 0) {
+          const result = data.data[0]
+          const pricesFound = result.results
+            ? result.results.filter((r: { price: string }) => r.price !== 'N/A').length
+            : 0
+          totalPricesFound += pricesFound
 
-          const res = await fetch('/api/crawl', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ asins: [asin], regions: [regionKey], crawleoApiKey: crawleoApiKey || undefined }),
-          })
+          // Show which regions had prices
+          const regionDetails = result.results
+            ? result.results.map((r: { region: string; price: string; priceDisplay: string }) =>
+                r.price !== 'N/A' ? `${r.region}: ${r.priceDisplay}` : `${r.region}: N/A`
+              ).join(' | ')
+            : ''
 
-          const data = await res.json()
-
-          if (data.success && data.data && data.data.length > 0) {
-            const result = data.data[0]
-            const regionPrices = result.results
-              ? result.results.filter((r: { price: string }) => r.price !== 'N/A').length
-              : 0
-            pricesFound += regionPrices
-          } else {
-            lastError = data.error || 'Failed'
-          }
-
-          // Delay between regions to let browser processes clean up
-          if (ri < regionKeys.length - 1 && !abortRef.current) {
-            await new Promise((r) => setTimeout(r, 2000))
-          }
-        }
-
-        totalPricesFound += pricesFound
-
-        if (pricesFound > 0 || !lastError) {
           setCrawlLog((prev) =>
             prev.map((entry, idx) =>
               idx === i
-                ? { ...entry, status: 'done', message: `${pricesFound}/5 prices found`, pricesFound, time: ts() }
+                ? { ...entry, status: 'done', message: `${pricesFound}/5 prices found — ${regionDetails}`, pricesFound, time: ts() }
                 : entry
             )
           )
         } else {
+          const errorMsg = data.error || data.details || 'Crawl failed — check API key and try again'
           setCrawlLog((prev) =>
             prev.map((entry, idx) =>
-              idx === i ? { ...entry, status: 'error', message: lastError || 'Failed', time: ts() } : entry
+              idx === i ? { ...entry, status: 'error', message: errorMsg, time: ts() } : entry
             )
           )
         }
-      } catch {
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : 'Network error'
         setCrawlLog((prev) =>
           prev.map((entry, idx) =>
-            idx === i ? { ...entry, status: 'error', message: 'Network error', time: ts() } : entry
+            idx === i ? { ...entry, status: 'error', message: `Network error: ${errMsg}`, time: ts() } : entry
           )
         )
       }
@@ -280,7 +276,7 @@ export default function Home() {
       await fetchProducts()
 
       if (i < uniqueAsins.length - 1 && !abortRef.current) {
-        await new Promise((r) => setTimeout(r, 1500))
+        await new Promise((r) => setTimeout(r, 2000))
       }
     }
 
@@ -651,7 +647,7 @@ export default function Home() {
                       </Button>
                     )}
                     <div className="text-[10px] text-gray-600 ml-2">
-                      Sequential regions • 1 region/request • AOD-only prices
+                      All 5 regions in 1 request • ~80s per ASIN • AOD-only prices
                     </div>
                   </div>
                 </div>

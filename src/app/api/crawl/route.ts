@@ -6,14 +6,20 @@ import type { CrawlResult } from '@/lib/aod-crawler'
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // AOD CRAWLER API
 //
-// Two modes:
-// 1. { asin, asins, regions, crawleoApiKey }: Crawl ASIN(s) via Crawleo API, save results
-// 2. { asin, results }: Save pre-crawled results to DB (from frontend)
+// Crawl ASIN(s) via Crawleo API across all specified regions.
+// Each region is processed sequentially via Python subprocess (Crawleo API).
 //
-// Uses Crawleo API to scrape real Amazon AOD prices with correct geolocation.
-// Prices come from AOD ONLY. If AOD has no offers → return N/A.
-// Regions are processed SEQUENTIALLY with delays to avoid rate limits.
+// CRITICAL RULES:
+// - Prices come from AOD ONLY (All Offers Display)
+// - If AOD has no offers → return N/A
+// - Takes ~15s per region, so 5 regions ≈ 80s total
+//
+// Timeout: This route needs a long timeout since Crawleo API calls take time.
+// Next.js API routes have a default maxDuration which we must respect.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Increase the max duration for this API route (5 regions × ~20s each + buffer)
+export const maxDuration = 300 // 5 minutes
 
 interface CrawlResultItem {
   domain: string

@@ -137,11 +137,12 @@ export async function crawlRegion(
     console.log(`[crawlRegion] Crawling ${asin} on ${region.domain} via Crawleo...`)
 
     // Call the Python script with ASIN, region, and Crawleo API key
+    // Timeout: Crawleo API can take up to 60s per region with retries
     const result = await new Promise<CrawlResult>((resolve) => {
       execFile(
         'python3',
         [SCRAPE_SCRIPT, asin, regionKey, crawleoApiKey],
-        { timeout: 90000, maxBuffer: 10 * 1024 * 1024 },
+        { timeout: 180000, maxBuffer: 10 * 1024 * 1024 },
         (error, stdout, stderr) => {
           if (error && !stdout) {
             console.error(`[crawlRegion] Script error: ${error.message}`)

@@ -318,3 +318,31 @@ Stage Summary:
 - `aod-total-offer-count` only counts OTHER sellers, not pinned offers - key insight
 - All 5 regions now return correct prices matching user's reference data
 - API key sk_3bc649fd_... is saved as default in frontend
+
+---
+Task ID: 2
+Agent: Main
+Task: Fix scraping to return correct prices from all 5 regions
+
+Work Log:
+- Diagnosed root cause: Frontend was sending 5 separate API requests (one per region), causing server instability and "0/5 prices found"
+- Changed frontend to send ALL 5 regions in a single request to /api/crawl
+- Backend already supports multi-region crawling sequentially
+- Added API key validation before starting crawl
+- Added detailed region results in crawl log message (e.g. "4/5 prices found — COM: $17.49 | EG: EGP 3,400.00 | DE: N/A | SA: SAR 130.00 | AE: AED 109.21")
+- Increased execFile timeout from 90s to 180s for Python subprocess
+- Added maxDuration = 300 (5 minutes) to crawl API route
+- Updated next.config.ts with experimental serverActions config
+- Updated subtitle from "Sequential regions • 1 region/request" to "All 5 regions in 1 request • ~80s per ASIN"
+- Verified all 5 regions return correct prices:
+  - COM: $17.49 ✅
+  - EG: EGP 3,400.00 ✅
+  - DE: N/A ✅ (no offers)
+  - SA: SAR 130.00 ✅
+  - AE: AED 109.21 ✅
+
+Stage Summary:
+- Fixed the main issue: frontend now sends all regions in one request
+- This prevents server crashes from multiple concurrent Python subprocess calls
+- All 5 regions return correct AOD prices
+- Crawl log shows detailed results per region
