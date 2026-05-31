@@ -1,25 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { crawlRegion, REGIONS } from '@/lib/aod-crawler'
-import type { CrawlResult } from '@/lib/aod-crawler'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// AOD CRAWLER API
+// AOD CRAWLER API — Save Results to DB
 //
-// Crawl ASIN(s) via Crawleo API across all specified regions.
-// Each region is processed sequentially via Python subprocess (Crawleo API).
+// The frontend calls the Crawleo mini-service (port 3002) directly
+// for price fetching, then calls this endpoint to save results to DB.
 //
 // CRITICAL RULES:
 // - Prices come from AOD ONLY (All Offers Display)
 // - If AOD has no offers → return N/A
-// - Takes ~15s per region, so 5 regions ≈ 80s total
-//
-// Timeout: This route needs a long timeout since Crawleo API calls take time.
-// Next.js API routes have a default maxDuration which we must respect.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-// Increase the max duration for this API route (5 regions × ~20s each + buffer)
-export const maxDuration = 300 // 5 minutes
 
 interface CrawlResultItem {
   domain: string
@@ -36,71 +27,30 @@ interface CrawlResultItem {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { asin, asins, regions, results: preCrawledResults, crawleoApiKey } = body
+    const { asin, results } = body
 
-    // ── Mode 2: Save pre-crawled results directly ──
-    if (preCrawledResults && Array.isArray(preCrawledResults) && asin) {
-      return await saveResults(asin, preCrawledResults)
+    if (!asin) {
+      return NextResponse.json({ error: 'ASIN required' }, { status: 400 })
     }
 
-    // ── Mode 1: Trigger crawl via Crawleo API ──
-    const asinList: string[] = asins || (asin ? [asin] : [])
-    const regionKeys: string[] = regions || Object.keys(REGIONS)
-
-    if (asinList.length === 0) {
-      return NextResponse.json({ error: 'No ASIN provided' }, { status: 400 })
+    if (!results || !Array.isArray(results) || results.length === 0) {
+      return NextResponse.json({ error: 'Results array required' }, { status: 400 })
     }
 
-    if (!crawleoApiKey) {
-      return NextResponse.json({ error: 'Crawleo API key is required' }, { status: 400 })
-    }
+    const cleanAsin = asin.trim().toUpperCase()
+    const crawlResults: CrawlResultItem[] = results
 
-    const allResults: { asin: string; results?: CrawlResultItem[]; error?: string }[] = []
+    await saveResultsToDB(cleanAsin, crawlResults)
 
-    for (const a of asinList) {
-      const cleanAsin = a.trim().toUpperCase()
-
-      if (!/^[A-Z0-9]{10}$/.test(cleanAsin)) {
-        allResults.push({ asin: cleanAsin, error: 'Invalid ASIN format', results: [] })
-        continue
-      }
-
-      console.log(`[Crawl API] Starting crawl for ${cleanAsin} regions: ${regionKeys.join(',')}`)
-
-      // Crawl each region SEQUENTIALLY
-      const crawlResults: CrawlResult[] = []
-
-      for (const regionKey of regionKeys) {
-        console.log(`[Crawl API] Crawling ${cleanAsin} on ${regionKey}...`)
-        const result = await crawlRegion(cleanAsin, regionKey, crawleoApiKey)
-        crawlResults.push(result)
-        console.log(`[Crawl API] ${cleanAsin} on ${regionKey}: price=${result.price} display=${result.priceDisplay}`)
-
-        // Small delay between regions
-        if (regionKeys.indexOf(regionKey) < regionKeys.length - 1) {
-          await new Promise((r) => setTimeout(r, 500))
-        }
-      }
-
-      // Save results to DB
-      await saveResultsToDB(cleanAsin, crawlResults)
-      allResults.push({ asin: cleanAsin, results: crawlResults })
-    }
-
-    return NextResponse.json({ success: true, data: allResults })
+    return NextResponse.json({
+      success: true,
+      asin: cleanAsin,
+      results: crawlResults,
+    })
   } catch (e) {
     console.error('[Crawl API Error]:', e)
-    return NextResponse.json({ error: 'Crawl failed', details: String(e) }, { status: 500 })
+    return NextResponse.json({ error: 'Save failed', details: String(e) }, { status: 500 })
   }
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// SAVE RESULTS TO DB
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-async function saveResults(asin: string, crawlResults: CrawlResultItem[]) {
-  const result = await saveResultsToDB(asin, crawlResults)
-  return result
 }
 
 async function saveResultsToDB(asin: string, crawlResults: CrawlResultItem[]) {
@@ -141,6 +91,4 @@ async function saveResultsToDB(asin: string, crawlResults: CrawlResultItem[]) {
       update: { price: result.price, currency: result.currency, priceDisplay: result.priceDisplay, updatedAt: new Date() },
     })
   }
-
-  return NextResponse.json({ success: true, asin: cleanAsin, results: crawlResults })
 }

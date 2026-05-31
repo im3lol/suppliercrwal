@@ -155,7 +155,7 @@ export default function Home() {
       second: '2-digit',
     })
 
-  // ── Bulk Crawl Handler (ONE request per ASIN with all 5 regions) ──
+  // ── Bulk Crawl Handler (ONE request per region for reliability) ──
   const handleBulkCrawl = async () => {
     const asins = asinInput
       .split(/[\n,;\s]+/)
@@ -184,7 +184,8 @@ export default function Home() {
 
     setIsCrawling(true)
     abortRef.current = false
-    setCrawlTotal(uniqueAsins.length)
+    const regionKeys = ['COM', 'EG', 'DE', 'SA', 'AE']
+    setCrawlTotal(uniqueAsins.length * regionKeys.length)
     setCrawlCurrent(0)
     setCrawlLog([])
 
@@ -192,12 +193,13 @@ export default function Home() {
       time: ts(),
       asin,
       status: 'pending',
-      message: 'Queued',
+      message: `Queued (${regionKeys.length} regions)`,
       pricesFound: 0,
     }))
     setCrawlLog(initLogs)
 
     let totalPricesFound = 0
+    let regionIdx = 0
 
     for (let i = 0; i < uniqueAsins.length; i++) {
       if (abortRef.current) {
@@ -212,65 +214,110 @@ export default function Home() {
       }
 
       const asin = uniqueAsins[i]
-      setCrawlCurrent(i + 1)
+      let pricesFound = 0
+      const regionResults: string[] = []
 
+      // Set log to running for this ASIN
       setCrawlLog((prev) =>
         prev.map((entry, idx) =>
-          idx === i ? { ...entry, status: 'running', message: 'Scanning 5 regions via Crawleo API...', time: ts() } : entry
+          idx === i ? { ...entry, status: 'running', message: `Scanning 0/${regionKeys.length} regions...`, time: ts() } : entry
         )
       )
 
-      try {
-        // Send ALL 5 regions in a single request — the backend processes them sequentially
-        // This is more reliable than 5 separate requests (avoids server crashes, timeouts)
-        const res = await fetch('/api/crawl', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            asins: [asin],
-            regions: ['COM', 'EG', 'DE', 'SA', 'AE'],
-            crawleoApiKey,
-          }),
-        })
+      // Crawl each region INDIVIDUALLY — one API call per region (~10-20s each)
+      // Calls the Crawleo service directly on port 3002, then saves to DB via Next.js
+      const CRAWLEO_PORT = 3002
+      const crawlResults: Array<{ domain: string; region: string; name: string; image: string; price: string; currency: string; priceDisplay: string; asin: string; error?: string }> = []
 
-        const data = await res.json()
+      for (let r = 0; r < regionKeys.length; r++) {
+        if (abortRef.current) break
 
-        if (data.success && data.data && data.data.length > 0) {
-          const result = data.data[0]
-          const pricesFound = result.results
-            ? result.results.filter((r: { price: string }) => r.price !== 'N/A').length
-            : 0
-          totalPricesFound += pricesFound
+        const regionKey = regionKeys[r]
+        regionIdx++
+        setCrawlCurrent(regionIdx)
 
-          // Show which regions had prices
-          const regionDetails = result.results
-            ? result.results.map((r: { region: string; price: string; priceDisplay: string }) =>
-                r.price !== 'N/A' ? `${r.region}: ${r.priceDisplay}` : `${r.region}: N/A`
-              ).join(' | ')
-            : ''
-
-          setCrawlLog((prev) =>
-            prev.map((entry, idx) =>
-              idx === i
-                ? { ...entry, status: 'done', message: `${pricesFound}/5 prices found — ${regionDetails}`, pricesFound, time: ts() }
-                : entry
-            )
-          )
-        } else {
-          const errorMsg = data.error || data.details || 'Crawl failed — check API key and try again'
-          setCrawlLog((prev) =>
-            prev.map((entry, idx) =>
-              idx === i ? { ...entry, status: 'error', message: errorMsg, time: ts() } : entry
-            )
-          )
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : 'Network error'
+        // Update log to show progress
         setCrawlLog((prev) =>
           prev.map((entry, idx) =>
-            idx === i ? { ...entry, status: 'error', message: `Network error: ${errMsg}`, time: ts() } : entry
+            idx === i ? { ...entry, status: 'running', message: `Scanning ${r + 1}/${regionKeys.length} regions (${regionKey})...`, time: ts() } : entry
           )
         )
+
+        try {
+          // Step 1: Call Crawleo service directly through gateway
+          const crawlRes = await fetch(`/?XTransformPort=${CRAWLEO_PORT}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              asin,
+              region: regionKey,
+              crawleoApiKey,
+            }),
+          })
+
+          const crawlData = await crawlRes.json()
+
+          if (crawlData.success && crawlData.results && crawlData.results.length > 0) {
+            const result = crawlData.results[0]
+            crawlResults.push(result)
+
+            if (result.price !== 'N/A') {
+              pricesFound++
+              regionResults.push(`${regionKey}: ${result.priceDisplay}`)
+            } else {
+              regionResults.push(`${regionKey}: N/A`)
+            }
+          } else {
+            const errResult = { domain: '', region: regionKey, name: `Product ${asin}`, image: '', price: 'N/A', currency: '', priceDisplay: 'N/A', asin, error: crawlData.error || 'Crawl failed' }
+            crawlResults.push(errResult)
+            regionResults.push(`${regionKey}: Error`)
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : 'Network error'
+          const errResult = { domain: '', region: regionKey, name: `Product ${asin}`, image: '', price: 'N/A', currency: '', priceDisplay: 'N/A', asin, error: errMsg }
+          crawlResults.push(errResult)
+          regionResults.push(`${regionKey}: NetErr`)
+          console.error(`[Crawl] ${asin} on ${regionKey} failed:`, errMsg)
+        }
+
+        // Step 2: Save results to DB via Next.js API after each region
+        try {
+          await fetch('/api/crawl', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ asin, results: crawlResults }),
+          })
+        } catch {
+          // DB save failure is not critical for user experience
+        }
+
+        // Refresh products after each region so user sees live updates
+        await fetchProducts()
+
+        // Small delay between regions
+        if (r < regionKeys.length - 1) {
+          await new Promise((r2) => setTimeout(r2, 300))
+        }
+      }
+
+      totalPricesFound += pricesFound
+
+      if (abortRef.current) {
+        setCrawlLog((prev) =>
+          prev.map((entry, idx) =>
+            idx === i
+              ? { ...entry, status: 'error', message: `Aborted — ${pricesFound}/5 found — ${regionResults.join(' | ')}`, pricesFound, time: ts() }
+              : entry
+          )
+        )
+      } else {
+        setCrawlLog((prev) =>
+          prev.map((entry, idx) =>
+            idx === i
+              ? { ...entry, status: 'done', message: `${pricesFound}/5 prices found — ${regionResults.join(' | ')}`, pricesFound, time: ts() }
+              : entry
+            )
+          )
       }
 
       await fetchProducts()
@@ -634,7 +681,7 @@ export default function Home() {
                       ) : (
                         <Zap className="w-3.5 h-3.5 mr-1.5" />
                       )}
-                      {isCrawling ? `SCANNING ${crawlCurrent}/${crawlTotal}...` : 'EXECUTE BULK SCAN'}
+                      {isCrawling ? `SCANNING ${crawlCurrent}/${crawlTotal} REGIONS...` : 'EXECUTE BULK SCAN'}
                     </Button>
                     {isCrawling && (
                       <Button
@@ -647,7 +694,7 @@ export default function Home() {
                       </Button>
                     )}
                     <div className="text-[10px] text-gray-600 ml-2">
-                      All 5 regions in 1 request • ~80s per ASIN • AOD-only prices
+                      1 request per region • ~15s per region • AOD-only prices
                     </div>
                   </div>
                 </div>

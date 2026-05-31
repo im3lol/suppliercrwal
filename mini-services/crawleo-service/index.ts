@@ -1,70 +1,34 @@
 /**
- * Amazon AOD Price Crawler — Direct Crawleo API (TypeScript)
+ * Crawleo AOD Crawler Mini-Service
  *
- * ALL prices come from AOD (All Offers Display) ONLY.
- * Calls Crawleo API (https://api.crawleo.dev/crawl) directly from TypeScript
- * to fetch AOD AJAX pages with JavaScript rendering and correct geolocation.
+ * Fetches Amazon AOD pages via Crawleo API and extracts prices.
+ * Runs on port 3002 to avoid crashing the Next.js dev server.
  *
  * CRITICAL RULES:
  * - Prices MUST come from AOD AJAX endpoint ONLY
- * - URL pattern: https://www.amazon.{region}/gp/product/ajax/aodAjaxMain/?asin={ASIN}
- * - NO fallback to main page prices
- * - NO ATC button prices from non-AOD sections
- * - NO alternative/recommended product prices
- * - If AOD has no offers → return "N/A"
+ * - If AOD has no offers → return N/A
  */
+
+import { serve } from 'bun'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // CONFIG
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export interface RegionConfig {
+const PORT = 3002
+
+interface RegionConfig {
   domain: string
-  region: string
   currency: string
-  currencyCookie: string
   geo: string
-  postalCode?: string
 }
 
-export const REGIONS: Record<string, RegionConfig> = {
-  COM: {
-    domain: 'amazon.com',
-    region: 'COM',
-    currency: 'USD',
-    currencyCookie: 'USD',
-    geo: 'us',
-    postalCode: '99950',
-  },
-  EG: {
-    domain: 'amazon.eg',
-    region: 'EG',
-    currency: 'EGP',
-    currencyCookie: 'EGP',
-    geo: 'eg',
-  },
-  DE: {
-    domain: 'amazon.de',
-    region: 'DE',
-    currency: 'EUR',
-    currencyCookie: 'EUR',
-    geo: 'de',
-    postalCode: '80331',
-  },
-  SA: {
-    domain: 'amazon.sa',
-    region: 'SA',
-    currency: 'SAR',
-    currencyCookie: 'SAR',
-    geo: 'sa',
-  },
-  AE: {
-    domain: 'amazon.ae',
-    region: 'AE',
-    currency: 'AED',
-    currencyCookie: 'AED',
-    geo: 'ae',
-  },
+const REGIONS: Record<string, RegionConfig> = {
+  COM: { domain: 'amazon.com', currency: 'USD', geo: 'us' },
+  EG: { domain: 'amazon.eg', currency: 'EGP', geo: 'eg' },
+  DE: { domain: 'amazon.de', currency: 'EUR', geo: 'de' },
+  SA: { domain: 'amazon.sa', currency: 'SAR', geo: 'sa' },
+  AE: { domain: 'amazon.ae', currency: 'AED', geo: 'ae' },
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -79,19 +43,33 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
 const CRAWLEO_API_URL = 'https://api.crawleo.dev/crawl'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWL RESULT TYPE
+// HELPERS
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export interface CrawlResult {
-  domain: string
-  region: string
-  name: string
-  image: string
-  price: string       // numeric like "10.63" or "N/A"
-  currency: string    // "EUR", "USD", etc.
-  priceDisplay: string // formatted like "€10.63" or "N/A"
-  asin: string
-  error?: string
+function formatPriceDisplay(price: string, currency: string): string {
+  if (price === 'N/A') return 'N/A'
+  const num = parseFloat(price)
+  if (isNaN(num)) return price
+  const symbol = CURRENCY_SYMBOLS[currency] ?? currency + ' '
+  return `${symbol}${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+function cleanWhole(wholeStr: string): string {
+  return wholeStr.replace(/[,.\s\u200e\u200f]/g, '')
+}
+
+function identifyCurrency(symbol: string, defaultCurrency: string): string {
+  const s = symbol.trim().replace(/[\u200e\u200f]/g, '')
+  if (s === '$') return 'USD'
+  if (s === '\u20ac') return 'EUR'
+  if (s === '\u00a3') return 'GBP'
+  if (s.toUpperCase() === 'SAR') return 'SAR'
+  if (s.toUpperCase() === 'AED') return 'AED'
+  if (s.toUpperCase() === 'EGP') return 'EGP'
+  if (s === '\u062c\u0646\u064a\u0647' || s === '\u062c.\u0645') return 'EGP'
+  if (s === '\u0631\u064a\u0627\u0644' || s === '\u0631.\u0633') return 'SAR'
+  if (s === '\u062f\u0631\u0647\u0645' || s === '\u062f.\u0625') return 'AED'
+  return defaultCurrency
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -132,10 +110,14 @@ async function fetchWithCrawleo(
         console.log(`[Crawleo] Fetching: ${url} (geo=${geolocation})`)
       }
 
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 120000)
+
       const response = await fetch(apiURL, {
         headers: { 'x-api-key': apiKey },
-        signal: AbortSignal.timeout(120000),
+        signal: controller.signal,
       })
+      clearTimeout(timeoutId)
 
       if (!response.ok) {
         const body = await response.text().catch(() => '')
@@ -144,7 +126,7 @@ async function fetchWithCrawleo(
         return null
       }
 
-      const data = await response.json()
+      const data = await response.json() as any
 
       if (!data.results || data.results.length === 0) {
         console.error(`[Crawleo] No results returned`)
@@ -187,39 +169,6 @@ async function fetchWithCrawleo(
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// HELPERS
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-function formatPriceDisplay(price: string, currency: string): string {
-  if (price === 'N/A') return 'N/A'
-  const num = parseFloat(price)
-  if (isNaN(num)) return price
-  const symbol = CURRENCY_SYMBOLS[currency] ?? currency + ' '
-  return `${symbol}${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-}
-
-/** Remove thousands separators from whole number part */
-function cleanWhole(wholeStr: string): string {
-  return wholeStr.replace(/[,.\s\u200e\u200f]/g, '')
-}
-
-/** Identify currency from symbol or text */
-function identifyCurrency(symbol: string, defaultCurrency: string): string {
-  const s = symbol.trim().replace(/[\u200e\u200f]/g, '')
-  if (s === '$') return 'USD'
-  if (s === '\u20ac') return 'EUR'
-  if (s === '\u00a3') return 'GBP'
-  if (s.toUpperCase() === 'SAR') return 'SAR'
-  if (s.toUpperCase() === 'AED') return 'AED'
-  if (s.toUpperCase() === 'EGP') return 'EGP'
-  // Arabic currency names
-  if (s === '\u062c\u0646\u064a\u0647' || s === '\u062c.\u0645') return 'EGP'  // جنيه or ج.م
-  if (s === '\u0631\u064a\u0627\u0644' || s === '\u0631.\u0633') return 'SAR'  // ريال or ر.س
-  if (s === '\u062f\u0631\u0647\u0645' || s === '\u062f.\u0625') return 'AED'  // درهم or د.إ
-  return defaultCurrency
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // PRICE PARSING
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -248,7 +197,6 @@ function parseNumberWithCurrency(numberStr: string, currency: string): PriceResu
   }
 
   if (lastDot > lastComma) {
-    // US/UK format: 3,400.00
     const wholePart = ns.slice(0, lastDot)
     const fracPart = ns.slice(lastDot + 1)
     if (fracPart.length === 2) {
@@ -261,7 +209,6 @@ function parseNumberWithCurrency(numberStr: string, currency: string): PriceResu
       if (val > 0) return { price: `${wholeClean}.${fracPart}0`, currency }
     }
   } else if (lastComma > lastDot) {
-    // European format: 10,63 or 3.400,00
     const wholePart = ns.slice(0, lastComma)
     const fracPart = ns.slice(lastComma + 1)
     if (fracPart.length === 2) {
@@ -270,22 +217,18 @@ function parseNumberWithCurrency(numberStr: string, currency: string): PriceResu
       if (val > 0) return { price: `${wholeClean}.${fracPart}`, currency }
     }
   } else if (lastComma > -1) {
-    // Only commas, no dots
     const fracPart = ns.slice(lastComma + 1)
     const wholePart = ns.slice(0, lastComma)
     if (fracPart.length === 2 && wholePart.length <= 3) {
-      // European decimal: "10,63"
       const wholeClean = cleanWhole(wholePart)
       const val = parseFloat(`${wholeClean}.${fracPart}`)
       if (val > 0) return { price: `${wholeClean}.${fracPart}`, currency }
     } else if (fracPart.length === 3) {
-      // Thousands separator: "1,200"
       const wholeClean = cleanWhole(ns)
       const val = parseFloat(wholeClean)
       if (val > 0) return { price: `${wholeClean}.00`, currency }
     }
   } else if (lastDot > -1) {
-    // Only dots, no commas
     const fracPart = ns.slice(lastDot + 1)
     const wholePart = ns.slice(0, lastDot)
     if (fracPart.length === 2) {
@@ -301,111 +244,43 @@ function parseNumberWithCurrency(numberStr: string, currency: string): PriceResu
 function extractPriceFromText(text: string, defaultCurrency: string): PriceResult | null {
   if (!text) return null
 
-  // Strip savings suffix
   let clean = text.replace(/\s+(with|mit|\u0645\u0639)\s+\d+\s+(percent|Prozent|\u0628\u0627\u0644\u0645\u0626\u0629|%)\s+(savings|Einsparungen|\u062a\u0648\u0641\u064a\u0631)/gi, '')
   clean = clean.trim()
-
-  // Remove HTML entities and RTL/LTR marks
   clean = clean.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/[\u200e\u200f]/g, '').trim()
 
-  // Try EUR: "€10.63" or "€10,63"
-  let m = clean.match(/\u20ac\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'EUR')
-    if (r) return r
-  }
+  let m: RegExpMatchArray | null
 
-  // Try EUR reversed: "10,63 €"
+  m = clean.match(/\u20ac\s*([\d.,]+)/)
+  if (m) { const r = parseNumberWithCurrency(m[1], 'EUR'); if (r) return r }
   m = clean.match(/([\d.,]+)\s*\u20ac/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'EUR')
-    if (r) return r
-  }
-
-  // Try USD: "$20.25"
+  if (m) { const r = parseNumberWithCurrency(m[1], 'EUR'); if (r) return r }
   m = clean.match(/\$\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'USD')
-    if (r) return r
-  }
-
-  // Try SAR: "SAR 113.38"
+  if (m) { const r = parseNumberWithCurrency(m[1], 'USD'); if (r) return r }
   m = clean.match(/SAR\s*([\d.,]+)/i)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'SAR')
-    if (r) return r
-  }
-
-  // Try AED: "AED 76.38"
+  if (m) { const r = parseNumberWithCurrency(m[1], 'SAR'); if (r) return r }
   m = clean.match(/AED\s*([\d.,]+)/i)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'AED')
-    if (r) return r
-  }
-
-  // Try EGP: "EGP 150.00"
+  if (m) { const r = parseNumberWithCurrency(m[1], 'AED'); if (r) return r }
   m = clean.match(/EGP\s*([\d.,]+)/i)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'EGP')
-    if (r) return r
-  }
-
-  // Arabic "جنيه" (EGP)
+  if (m) { const r = parseNumberWithCurrency(m[1], 'EGP'); if (r) return r }
   m = clean.match(/\u062c\u0646\u064a\u0647\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'EGP')
-    if (r) return r
-  }
+  if (m) { const r = parseNumberWithCurrency(m[1], 'EGP'); if (r) return r }
   m = clean.match(/([\d.,]+)\s*\u062c\u0646\u064a\u0647/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'EGP')
-    if (r) return r
-  }
-
-  // Arabic "ريال" (SAR)
+  if (m) { const r = parseNumberWithCurrency(m[1], 'EGP'); if (r) return r }
   m = clean.match(/\u0631\u064a\u0627\u0644\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'SAR')
-    if (r) return r
-  }
+  if (m) { const r = parseNumberWithCurrency(m[1], 'SAR'); if (r) return r }
   m = clean.match(/([\d.,]+)\s*\u0631\u064a\u0627\u0644/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'SAR')
-    if (r) return r
-  }
-
-  // Arabic "ر.س" (SAR abbreviation)
+  if (m) { const r = parseNumberWithCurrency(m[1], 'SAR'); if (r) return r }
   m = clean.match(/\u0631\.\u0633\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'SAR')
-    if (r) return r
-  }
-
-  // Arabic "درهم" (AED)
+  if (m) { const r = parseNumberWithCurrency(m[1], 'SAR'); if (r) return r }
   m = clean.match(/\u062f\u0631\u0647\u0645\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'AED')
-    if (r) return r
-  }
+  if (m) { const r = parseNumberWithCurrency(m[1], 'AED'); if (r) return r }
   m = clean.match(/([\d.,]+)\s*\u062f\u0631\u0647\u0645/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'AED')
-    if (r) return r
-  }
-
-  // Arabic "د.إ" (AED abbreviation)
+  if (m) { const r = parseNumberWithCurrency(m[1], 'AED'); if (r) return r }
   m = clean.match(/\u062f\.\u0625\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'AED')
-    if (r) return r
-  }
+  if (m) { const r = parseNumberWithCurrency(m[1], 'AED'); if (r) return r }
 
-  // Last resort: just a number
   m = clean.match(/([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], defaultCurrency)
-    if (r) return r
-  }
+  if (m) { const r = parseNumberWithCurrency(m[1], defaultCurrency); if (r) return r }
 
   return null
 }
@@ -413,83 +288,30 @@ function extractPriceFromText(text: string, defaultCurrency: string): PriceResul
 function extractPriceFromMarkdown(md: string, defaultCurrency: string): PriceResult | null {
   let m: RegExpMatchArray | null
 
-  // "10,63 €" compact
   m = md.match(/([\d.,]+)\s*\u20ac/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'EUR')
-    if (r) return r
-  }
-
-  // "€10.63" prefix
+  if (m) { const r = parseNumberWithCurrency(m[1], 'EUR'); if (r) return r }
   m = md.match(/\u20ac\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'EUR')
-    if (r) return r
-  }
-
-  // "$17.49"
+  if (m) { const r = parseNumberWithCurrency(m[1], 'EUR'); if (r) return r }
   m = md.match(/\$\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'USD')
-    if (r) return r
-  }
-
-  // SAR
+  if (m) { const r = parseNumberWithCurrency(m[1], 'USD'); if (r) return r }
   m = md.match(/SAR\s*([\d.,]+)/i)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'SAR')
-    if (r) return r
-  }
-
-  // AED
+  if (m) { const r = parseNumberWithCurrency(m[1], 'SAR'); if (r) return r }
   m = md.match(/AED\s*([\d.,]+)/i)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'AED')
-    if (r) return r
-  }
-
-  // EGP
+  if (m) { const r = parseNumberWithCurrency(m[1], 'AED'); if (r) return r }
   m = md.match(/EGP\s*([\d.,]+)/i)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'EGP')
-    if (r) return r
-  }
-
-  // Arabic "جنيه" (EGP)
+  if (m) { const r = parseNumberWithCurrency(m[1], 'EGP'); if (r) return r }
   m = md.match(/\u062c\u0646\u064a\u0647\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'EGP')
-    if (r) return r
-  }
+  if (m) { const r = parseNumberWithCurrency(m[1], 'EGP'); if (r) return r }
   m = md.match(/([\d.,]+)\s*\u062c\u0646\u064a\u0647/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'EGP')
-    if (r) return r
-  }
-
-  // Arabic "ريال" (SAR)
+  if (m) { const r = parseNumberWithCurrency(m[1], 'EGP'); if (r) return r }
   m = md.match(/\u0631\u064a\u0627\u0644\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'SAR')
-    if (r) return r
-  }
+  if (m) { const r = parseNumberWithCurrency(m[1], 'SAR'); if (r) return r }
   m = md.match(/([\d.,]+)\s*\u0631\u064a\u0627\u0644/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'SAR')
-    if (r) return r
-  }
-
-  // Arabic "درهم" (AED)
+  if (m) { const r = parseNumberWithCurrency(m[1], 'SAR'); if (r) return r }
   m = md.match(/\u062f\u0631\u0647\u0645\s*([\d.,]+)/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'AED')
-    if (r) return r
-  }
+  if (m) { const r = parseNumberWithCurrency(m[1], 'AED'); if (r) return r }
   m = md.match(/([\d.,]+)\s*\u062f\u0631\u0647\u0645/)
-  if (m) {
-    const r = parseNumberWithCurrency(m[1], 'AED')
-    if (r) return r
-  }
+  if (m) { const r = parseNumberWithCurrency(m[1], 'AED'); if (r) return r }
 
   return null
 }
@@ -498,7 +320,6 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
   const region = REGIONS[regionKey] ?? REGIONS.COM!
   const defaultCurrency = region.currency
 
-  // Strip RTL/LTR marks for cleaner matching
   const htmlClean = rawHtml.replace(/[\u200e\u200f]/g, '')
   const mdClean = markdown.replace(/[\u200e\u200f]/g, '')
 
@@ -509,20 +330,16 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
     let rawTitle = titleMatch[1].trim()
     rawTitle = rawTitle.replace(/\s*[:|]\s*Amazon\.\w+\s*$/, '')
     rawTitle = rawTitle.replace(/\s*:\s*Online.*$/i, '')
-    // Remove rating patterns in all languages
-    rawTitle = rawTitle.replace(/\s+\d+[.,]\d+\s+(von|out of|من)\s+\d+\s+(Sternen|stars|نجوم).*$/i, '')
-    // Remove "new" / "neu" / "جديد" and everything after
-    rawTitle = rawTitle.replace(/\s+(neu|new|جديد|تمت الإضافة).*$/i, '')
+    rawTitle = rawTitle.replace(/\s+\d+[.,]\d+\s+(von|out of|\u0645\u0646)\s+\d+\s+(Sternen|stars|\u0646\u062c\u0648\u0645).*$/i, '')
+    rawTitle = rawTitle.replace(/\s+(neu|new|\u062c\u062f\u064a\u062f|\u062a\u0645\u062a \u0627\u0644\u0625\u0636\u0627\u0641\u0629).*$/i, '')
     if (rawTitle) name = rawTitle.slice(0, 300).trim()
   }
 
-  // Fallback: first heading in markdown
   if (!name) {
     const nameMatch = mdClean.match(/^#{1,5}\s+(.+?)(?:\n|$)/)
     if (nameMatch) {
       let rawName = nameMatch[1].trim()
-      // Truncate at rating patterns
-      const ratingCut = rawName.match(/^(.+?)(?:\s+\d+[.,]\d+\s+(von|out of|من)\s+\d+\s+(Sternen|stars|نجوم))/)
+      const ratingCut = rawName.match(/^(.+?)(?:\s+\d+[.,]\d+\s+(von|out of|\u0645\u0646)\s+\d+\s+(Sternen|stars|\u0646\u062c\u0648\u0645))/)
       if (ratingCut) {
         name = ratingCut[1].trim().slice(0, 300)
       } else {
@@ -531,17 +348,14 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
     }
   }
 
-  // Clean up name: remove trailing price/coupon text
-  name = name.replace(/\s+\d+[.,]\d+\s*(جنيه|ريال|درهم|EGP|SAR|AED|\$|€).*$/i, '')
-  name = name.replace(/\s+(تسجيل الدخول|Sign in|Anmelden).*$/i, '')
+  name = name.replace(/\s+\d+[.,]\d+\s*(\u062c\u0646\u064a\u0647|\u0631\u064a\u0627\u0644|\u062f\u0631\u0647\u0645|EGP|SAR|AED|\$|\u20ac).*$/i, '')
+  name = name.replace(/\s+(\u062a\u0633\u062c\u064a\u0644 \u0627\u0644\u062f\u062e\u0648\u0644|Sign in|Anmelden).*$/i, '')
   name = name.trim()
 
   // ── Extract product image ──
   let image = ''
   const imgMatch = htmlClean.match(/src=["']?(https?:\/\/[^"'>\s]*images-amazon[^"'>\s]*\/images\/I\/[^"'>\s]+)/)
-  if (imgMatch) {
-    image = imgMatch[1]
-  }
+  if (imgMatch) image = imgMatch[1]
 
   // ── Check for truly no offers ──
   const offerCountMatch =
@@ -553,27 +367,25 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
 
   const priceElements = htmlClean.match(/id="aod-price-\d+"/g) ?? []
   const hasPriceElements = priceElements.length > 0
-  console.log(`[Parse] aod-price-* elements found: ${priceElements.length} (${priceElements.slice(0, 5).join(', ')})`)
+  console.log(`[Parse] aod-price-* elements found: ${priceElements.length}`)
 
-  // Only return N/A if BOTH: no other sellers (offer count = 0) AND no price elements at all
   if (totalOffers === 0 && !hasPriceElements) {
-    console.log(`[Parse] No offers at all (offer-count=0, no aod-price elements) → N/A`)
+    console.log(`[Parse] No offers at all → N/A`)
     return { price: 'N/A', currency: defaultCurrency, name, image }
   }
 
-  // ━━━ Strategy 1: Accessibility label (BEST) ━━━
+  // Strategy 1: Accessibility label
   const accRegex = /<span[^>]*class="[^"]*aok-offscreen[^"]*apex-pricetopay[^"]*"[^>]*>\s*([^<]+?)\s*<\/span>/g
   let accMatch: RegExpExecArray | null
   while ((accMatch = accRegex.exec(htmlClean)) !== null) {
-    const accText = accMatch[1].trim()
-    const priceResult = extractPriceFromText(accText, defaultCurrency)
+    const priceResult = extractPriceFromText(accMatch[1].trim(), defaultCurrency)
     if (priceResult) {
-      console.log(`[Parse] Price from accessibility label: ${accText} -> ${JSON.stringify(priceResult)}`)
+      console.log(`[Parse] Price from accessibility label -> ${JSON.stringify(priceResult)}`)
       return { ...priceResult, name, image }
     }
   }
 
-  // ━━━ Strategy 2: a-price components ━━━
+  // Strategy 2: a-price components
   const priceBlockRegex =
     /<span[^>]*class="[^"]*a-price[^"]*"[^>]*>[\s\S]*?<span[^>]*class="[^"]*a-price-symbol[^"]*"[^>]*>\s*([^<]+?)\s*<\/span>[\s\S]*?<span[^>]*class="[^"]*a-price-whole[^"]*"[^>]*>([\s\S]*?)<\/span>[\s\S]*?<span[^>]*class="[^"]*a-price-fraction[^"]*"[^>]*>\s*([^<]+?)\s*<\/span>/g
 
@@ -583,45 +395,36 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
     const whole = priceBlock[2].trim().replace(/[,.]$/, '')
     const fraction = priceBlock[3].trim()
     const wholeClean = cleanWhole(whole)
-    try {
-      const priceVal = parseFloat(`${wholeClean}.${fraction}`)
-      if (priceVal > 0) {
-        const currency = identifyCurrency(symbol, defaultCurrency)
-        console.log(`[Parse] Price from a-price components: ${symbol}${whole}.${fraction} -> ${wholeClean}.${fraction} ${currency}`)
-        return { price: `${wholeClean}.${fraction}`, currency, name, image }
-      }
-    } catch {
-      // fall through
+    const priceVal = parseFloat(`${wholeClean}.${fraction}`)
+    if (priceVal > 0) {
+      const currency = identifyCurrency(symbol, defaultCurrency)
+      console.log(`[Parse] Price from a-price components -> ${wholeClean}.${fraction} ${currency}`)
+      return { price: `${wholeClean}.${fraction}`, currency, name, image }
     }
   }
 
-  // ━━━ Strategy 3: a-offscreen text ━━━
+  // Strategy 3: a-offscreen text
   const aOffscreenRegex = /<span[^>]*class="[^"]*a-offscreen[^"]*"[^>]*>\s*([^<]+?)\s*<\/span>/g
   let offscreenMatch: RegExpExecArray | null
   while ((offscreenMatch = aOffscreenRegex.exec(htmlClean)) !== null) {
-    const priceText = offscreenMatch[1].trim()
-    const priceResult = extractPriceFromText(priceText, defaultCurrency)
+    const priceResult = extractPriceFromText(offscreenMatch[1].trim(), defaultCurrency)
     if (priceResult) {
-      try {
-        const val = parseFloat(priceResult.price)
-        if (val >= 0.5) {
-          console.log(`[Parse] Price from a-offscreen: ${priceText} -> ${JSON.stringify(priceResult)}`)
-          return { ...priceResult, name, image }
-        }
-      } catch {
-        // fall through
+      const val = parseFloat(priceResult.price)
+      if (val >= 0.5) {
+        console.log(`[Parse] Price from a-offscreen -> ${JSON.stringify(priceResult)}`)
+        return { ...priceResult, name, image }
       }
     }
   }
 
-  // ━━━ Strategy 4: Markdown patterns ━━━
+  // Strategy 4: Markdown patterns
   const mdPriceResult = extractPriceFromMarkdown(mdClean, defaultCurrency)
   if (mdPriceResult) {
-    console.log(`[Parse] Price from markdown: ${JSON.stringify(mdPriceResult)}`)
+    console.log(`[Parse] Price from markdown -> ${JSON.stringify(mdPriceResult)}`)
     return { ...mdPriceResult, name, image }
   }
 
-  // ── Fallback: check for no-offer phrases if we couldn't find a price ──
+  // Fallback
   if (totalOffers === -1 && !hasPriceElements) {
     const lowerHtml = htmlClean.toLowerCase()
     const lowerMd = mdClean.toLowerCase()
@@ -629,35 +432,21 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
       .some(p => lowerHtml.includes(p) || lowerMd.includes(p))
     const noOtherSellers = lowerHtml.includes('no other sellers') || lowerMd.includes('no other sellers')
     const noSellersAr = lowerHtml.includes('\u0644\u0627 \u064a\u0648\u062c\u062f \u0628\u0627\u0626\u0639\u0648\u0646 \u0622\u062e\u0631\u0648\u0646') || lowerHtml.includes('\u0644\u0627 \u064a\u0648\u062c\u062f \u062d\u0627\u0644\u064a\u0627\u064b \u0628\u0627\u0626\u0639\u0648\u0646')
-
     if (hasNoFeatured && (noOtherSellers || noSellersAr)) {
-      console.log(`[Parse] No offers detected (no featured + no other sellers) → N/A`)
+      console.log(`[Parse] No offers detected → N/A`)
       return { price: 'N/A', currency: defaultCurrency, name, image }
     }
   }
 
-  console.log(`[Parse] No price found for ${regionKey} → N/A`)
+  console.log(`[Parse] No price found → N/A`)
   return { price: 'N/A', currency: defaultCurrency, name, image }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWL ONE REGION — Direct Crawleo API Call
+// CRAWL ONE REGION
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/**
- * Crawl a single ASIN on a single region using the Crawleo API directly.
- *
- * 1. Fetch the AOD AJAX endpoint: /gp/product/ajax/aodAjaxMain/?asin={ASIN}
- * 2. Parse the HTML/markdown response for prices
- * 3. Extract price from various patterns (€10,63, $20.25, SAR 113.38, etc.)
- *
- * Prices come from AOD ONLY. If no offers → N/A.
- */
-export async function crawlRegion(
-  asin: string,
-  regionKey: string,
-  crawleoApiKey?: string
-): Promise<CrawlResult> {
+async function crawlRegion(asin: string, regionKey: string, crawleoApiKey: string) {
   const region = REGIONS[regionKey]
   if (!region) {
     return {
@@ -673,82 +462,102 @@ export async function crawlRegion(
     }
   }
 
-  const na: CrawlResult = {
+  const url = `https://www.${region.domain}/gp/product/ajax/aodAjaxMain/?asin=${asin}`
+  console.log(`[crawlRegion] Crawling ${asin} on ${region.domain} via Crawleo...`)
+
+  const crawleoResult = await fetchWithCrawleo(url, crawleoApiKey, region.geo)
+
+  if (!crawleoResult) {
+    return {
+      domain: region.domain,
+      region: regionKey,
+      name: `Product ${asin}`,
+      image: '',
+      price: 'N/A',
+      currency: region.currency,
+      priceDisplay: 'N/A',
+      asin,
+      error: 'Failed to fetch AOD page from Crawleo',
+    }
+  }
+
+  const htmlForParsing = crawleoResult.raw_html || crawleoResult.enhanced_html
+  const parsed = parsePrice(htmlForParsing, crawleoResult.markdown, regionKey)
+
+  const result = {
     domain: region.domain,
-    region: region.region,
-    name: `Product ${asin}`,
-    image: '',
-    price: 'N/A',
-    currency: region.currency,
-    priceDisplay: 'N/A',
+    region: regionKey,
+    name: parsed.name || `Product ${asin}`,
+    image: parsed.image || '',
+    price: parsed.price,
+    currency: parsed.currency,
+    priceDisplay: formatPriceDisplay(parsed.price, parsed.currency),
     asin,
   }
 
-  if (!crawleoApiKey) {
-    return { ...na, error: 'Crawleo API key is required' }
-  }
-
-  try {
-    console.log(`[crawlRegion] Crawling ${asin} on ${region.domain} via Crawleo...`)
-
-    // Build AOD AJAX URL — this is the ONLY source for prices
-    const url = `https://www.${region.domain}/gp/product/ajax/aodAjaxMain/?asin=${asin}`
-
-    // Fetch via Crawleo API with JavaScript rendering and geolocation
-    const crawleoResult = await fetchWithCrawleo(url, crawleoApiKey, region.geo)
-
-    if (!crawleoResult) {
-      return { ...na, error: 'Failed to fetch AOD page from Crawleo' }
-    }
-
-    // Parse the Crawleo response — prefer raw_html for accurate price extraction
-    const htmlForParsing = crawleoResult.raw_html || crawleoResult.enhanced_html
-    const parsed = parsePrice(htmlForParsing, crawleoResult.markdown, regionKey)
-
-    const result: CrawlResult = {
-      domain: region.domain,
-      region: region.region,
-      name: parsed.name || `Product ${asin}`,
-      image: parsed.image || '',
-      price: parsed.price,
-      currency: parsed.currency,
-      priceDisplay: formatPriceDisplay(parsed.price, parsed.currency),
-      asin,
-    }
-
-    console.log(`[crawlRegion] Result for ${asin} on ${region.domain}: price=${result.price} display=${result.priceDisplay}`)
-    return result
-  } catch (e) {
-    console.error(`[crawlRegion] Error for ${asin} on ${region.domain}:`, e)
-    return { ...na, error: String(e) }
-  }
+  console.log(`[crawlRegion] Result: price=${result.price} display=${result.priceDisplay}`)
+  return result
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWL ACROSS MULTIPLE REGIONS
+// HTTP SERVER
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/**
- * Crawl a single ASIN across all specified regions.
- * Regions are processed SEQUENTIALLY with a small delay between each
- * to avoid rate limiting.
- */
-export async function crawlAsin(
-  asin: string,
-  regionKeys: string[] = Object.keys(REGIONS),
-  crawleoApiKey?: string
-): Promise<CrawlResult[]> {
-  const results: CrawlResult[] = []
-
-  for (const key of regionKeys) {
-    const result = await crawlRegion(asin, key, crawleoApiKey)
-    results.push(result)
-
-    // Small delay between regions to avoid rate limiting
-    if (regionKeys.indexOf(key) < regionKeys.length - 1) {
-      await new Promise((r) => setTimeout(r, 500))
+serve({
+  port: PORT,
+  async fetch(req) {
+    // CORS headers
+    if (req.method === 'OPTIONS') {
+      return new Response(null, {
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+        },
+      })
     }
-  }
 
-  return results
-}
+    if (req.method !== 'POST') {
+      return Response.json({ error: 'Method not allowed' }, { status: 405 })
+    }
+
+    try {
+      const body = await req.json() as { asin?: string; region?: string; crawleoApiKey?: string }
+      const { asin, region, crawleoApiKey } = body
+
+      if (!asin || !/^[A-Z0-9]{10}$/i.test(asin)) {
+        return Response.json({ error: 'Valid ASIN required' }, { status: 400 })
+      }
+
+      if (!crawleoApiKey) {
+        return Response.json({ error: 'Crawleo API key required' }, { status: 400 })
+      }
+
+      const cleanAsin = asin.trim().toUpperCase()
+      const regionKey = (region || 'COM').trim().toUpperCase()
+
+      if (!REGIONS[regionKey]) {
+        return Response.json({ error: `Invalid region: ${regionKey}` }, { status: 400 })
+      }
+
+      console.log(`[API] Crawling ${cleanAsin} on ${regionKey}`)
+      const result = await crawlRegion(cleanAsin, regionKey, crawleoApiKey)
+
+      return Response.json({
+        success: true,
+        asin: cleanAsin,
+        results: [result],
+      }, {
+        headers: { 'Access-Control-Allow-Origin': '*' },
+      })
+    } catch (e) {
+      console.error('[API Error]:', e)
+      return Response.json(
+        { error: 'Crawl failed', details: String(e) },
+        { status: 500, headers: { 'Access-Control-Allow-Origin': '*' } }
+      )
+    }
+  },
+})
+
+console.log(`🚀 Crawleo AOD Crawler service running on port ${PORT}`)
