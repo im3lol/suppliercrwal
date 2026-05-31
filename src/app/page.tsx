@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
 import {
   Zap, Download, Trash2, RefreshCw,
   Globe, Activity, Database, Server, ChevronRight,
@@ -46,6 +46,29 @@ interface LogEntry {
   status: 'pending' | 'running' | 'done' | 'error'
   message: string
   pricesFound: number
+  regionDetails: RegionDetail[]
+}
+
+interface RegionDetail {
+  region: string
+  price: string
+  priceDisplay: string
+  status: 'success' | 'error' | 'na'
+  debug: {
+    url: string
+    crawleoHttpStatus: number
+    pageStatusCode: number
+    htmlSize: number
+    markdownSize: number
+    credits: number
+    timingMs: number
+    retryCount: number
+    errorMsg: string
+    aodOfferCount: number
+    aPriceCount: number
+    parseStrategy: string
+    rawPriceText: string
+  } | null
 }
 
 const REGIONS = [
@@ -78,6 +101,7 @@ export default function Home() {
   const [dbSetupNeeded, setDbSetupNeeded] = useState(false)
   const [setupSql, setSetupSql] = useState('')
   const [showSetup, setShowSetup] = useState(false)
+  const [expandedLogIdx, setExpandedLogIdx] = useState<number | null>(null)
   const abortRef = useRef(false)
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -217,6 +241,7 @@ export default function Home() {
       status: 'pending',
       message: `Queued (${regionKeys.length} regions)`,
       pricesFound: 0,
+      regionDetails: [],
     }))
     setCrawlLog(initLogs)
 
@@ -238,16 +263,17 @@ export default function Home() {
       const asin = uniqueAsins[i]
       let pricesFound = 0
       const regionResults: string[] = []
+      const regionDetails: RegionDetail[] = []
 
       // Set log to running for this ASIN
       setCrawlLog((prev) =>
         prev.map((entry, idx) =>
-          idx === i ? { ...entry, status: 'running', message: `Scanning 0/${regionKeys.length} regions...`, time: ts() } : entry
+          idx === i ? { ...entry, status: 'running', message: `Scanning 0/${regionKeys.length} regions...`, time: ts(), regionDetails: [] } : entry
         )
       )
 
       // Crawl each region INDIVIDUALLY — one API call per region (~10-20s each)
-      const crawlResults: Array<{ domain: string; region: string; name: string; image: string; price: string; currency: string; priceDisplay: string; asin: string; error?: string }> = []
+      const crawlResults: Array<{ domain: string; region: string; name: string; image: string; price: string; currency: string; priceDisplay: string; asin: string; error?: string; debug?: RegionDetail['debug'] }> = []
 
       for (let r = 0; r < regionKeys.length; r++) {
         if (abortRef.current) break
@@ -284,19 +310,23 @@ export default function Home() {
             if (result.price !== 'N/A') {
               pricesFound++
               regionResults.push(`${regionKey}: ${result.priceDisplay}`)
+              regionDetails.push({ region: regionKey, price: result.price, priceDisplay: result.priceDisplay, status: 'success', debug: result.debug || null })
             } else {
               regionResults.push(`${regionKey}: N/A`)
+              regionDetails.push({ region: regionKey, price: 'N/A', priceDisplay: 'N/A', status: 'na', debug: result.debug || null })
             }
           } else {
-            const errResult = { domain: '', region: regionKey, name: `Product ${asin}`, image: '', price: 'N/A', currency: '', priceDisplay: 'N/A', asin, error: data.error || 'Crawl failed' }
+            const errResult = { domain: '', region: regionKey, name: `Product ${asin}`, image: '', price: 'N/A', currency: '', priceDisplay: 'N/A', asin, error: data.error || 'Crawl failed', debug: data.results?.[0]?.debug || null }
             crawlResults.push(errResult)
             regionResults.push(`${regionKey}: Error`)
+            regionDetails.push({ region: regionKey, price: 'N/A', priceDisplay: 'N/A', status: 'error', debug: data.results?.[0]?.debug || null })
           }
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : 'Network error'
           const errResult = { domain: '', region: regionKey, name: `Product ${asin}`, image: '', price: 'N/A', currency: '', priceDisplay: 'N/A', asin, error: errMsg }
           crawlResults.push(errResult)
           regionResults.push(`${regionKey}: NetErr`)
+          regionDetails.push({ region: regionKey, price: 'N/A', priceDisplay: 'N/A', status: 'error', debug: null })
           console.error(`[Crawl] ${asin} on ${regionKey} failed:`, errMsg)
         }
 
@@ -315,7 +345,7 @@ export default function Home() {
         setCrawlLog((prev) =>
           prev.map((entry, idx) =>
             idx === i
-              ? { ...entry, status: 'error', message: `Aborted — ${pricesFound}/5 found — ${regionResults.join(' | ')}`, pricesFound, time: ts() }
+              ? { ...entry, status: 'error', message: `Aborted — ${pricesFound}/5 found — ${regionResults.join(' | ')}`, pricesFound, regionDetails, time: ts() }
               : entry
           )
         )
@@ -323,7 +353,7 @@ export default function Home() {
         setCrawlLog((prev) =>
           prev.map((entry, idx) =>
             idx === i
-              ? { ...entry, status: 'done', message: `${pricesFound}/5 prices found — ${regionResults.join(' | ')}`, pricesFound, time: ts() }
+              ? { ...entry, status: 'done', message: `${pricesFound}/5 prices found — ${regionResults.join(' | ')}`, pricesFound, regionDetails, time: ts() }
               : entry
             )
           )
@@ -792,8 +822,8 @@ export default function Home() {
                       </thead>
                       <tbody>
                         {crawlLog.map((entry, idx) => (
+                          <Fragment key={`${entry.asin}-${idx}`}>
                           <tr
-                            key={`${entry.asin}-${idx}`}
                             className={`border-b border-[#1a1a1a]/50 ${
                               entry.status === 'running' ? 'bg-yellow-500/5' :
                               entry.status === 'done' ? 'bg-green-500/5' :
@@ -824,8 +854,96 @@ export default function Home() {
                                 </span>
                               )}
                             </td>
-                            <td className="px-3 py-1.5 text-gray-400">{entry.message}</td>
+                            <td className="px-3 py-1.5 text-gray-400">
+                              <div className="flex items-center gap-2">
+                                <span>{entry.message}</span>
+                                {entry.regionDetails.length > 0 && (
+                                  <button
+                                    onClick={() => setExpandedLogIdx(expandedLogIdx === idx ? null : idx)}
+                                    className="text-orange-400 hover:text-orange-300 text-[9px] font-bold shrink-0"
+                                  >
+                                    {expandedLogIdx === idx ? '▲ HIDE' : '▼ DEBUG'}
+                                  </button>
+                                )}
+                              </div>
+                            </td>
                           </tr>
+                          {/* Expanded debug details */}
+                          {expandedLogIdx === idx && entry.regionDetails.length > 0 && (
+                            <tr>
+                              <td colSpan={4} className="px-0 py-0">
+                                <div className="bg-[#080808] border-t border-b border-[#2a2a2a] p-3">
+                                  <table className="w-full text-[10px]">
+                                    <thead>
+                                      <tr className="text-gray-600">
+                                        <th className="text-left px-2 py-1 w-14">Region</th>
+                                        <th className="text-left px-2 py-1 w-20">Price</th>
+                                        <th className="text-left px-2 py-1 w-16">Status</th>
+                                        <th className="text-left px-2 py-1">Debug Details</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {entry.regionDetails.map((rd, ridx) => (
+                                        <tr key={ridx} className={`border-t border-[#1a1a1a]/50 ${rd.status === 'success' ? 'bg-green-500/5' : rd.status === 'error' ? 'bg-red-500/5' : 'bg-yellow-500/5'}`}>
+                                          <td className="px-2 py-1.5">
+                                            <span className={`font-bold ${rd.status === 'success' ? 'text-green-400' : rd.status === 'error' ? 'text-red-400' : 'text-yellow-400'}`}>
+                                              {rd.region}
+                                            </span>
+                                          </td>
+                                          <td className="px-2 py-1.5 text-gray-300 font-mono">
+                                            {rd.priceDisplay}
+                                          </td>
+                                          <td className="px-2 py-1.5">
+                                            {rd.status === 'success' && <span className="text-green-400">✓ Found</span>}
+                                            {rd.status === 'na' && <span className="text-yellow-400">— N/A</span>}
+                                            {rd.status === 'error' && <span className="text-red-400">✗ Error</span>}
+                                          </td>
+                                          <td className="px-2 py-1.5">
+                                            {rd.debug ? (
+                                              <div className="space-y-0.5 font-mono text-[9px]">
+                                                <div className="text-gray-500">
+                                                  URL: <span className="text-gray-400">{rd.debug.url}</span>
+                                                </div>
+                                                <div className="text-gray-500">
+                                                  Crawleo: <span className={rd.debug.crawleoHttpStatus === 200 ? 'text-green-400' : 'text-red-400'}>HTTP {rd.debug.crawleoHttpStatus}</span>
+                                                  {' | '}
+                                                  Page: <span className={rd.debug.pageStatusCode === 200 ? 'text-green-400' : rd.debug.pageStatusCode === 404 ? 'text-yellow-400' : 'text-red-400'}>HTTP {rd.debug.pageStatusCode}</span>
+                                                  {' | '}
+                                                  HTML: <span className="text-gray-400">{rd.debug.htmlSize.toLocaleString()} chars</span>
+                                                  {' | '}
+                                                  Time: <span className="text-gray-400">{(rd.debug.timingMs / 1000).toFixed(1)}s</span>
+                                                </div>
+                                                {rd.debug.errorMsg && (
+                                                  <div className="text-red-400">
+                                                    Error: {rd.debug.errorMsg}
+                                                  </div>
+                                                )}
+                                                <div className="text-gray-500">
+                                                  Parse: <span className="text-gray-400">{rd.debug.parseStrategy || 'none'}</span>
+                                                  {rd.debug.rawPriceText && (
+                                                    <> | Raw: <span className="text-gray-400">"{rd.debug.rawPriceText}"</span></>
+                                                  )}
+                                                  {' | '}
+                                                  AOD offers: <span className="text-gray-400">{rd.debug.aodOfferCount}</span>
+                                                  {' | '}
+                                                  a-price: <span className="text-gray-400">{rd.debug.aPriceCount}</span>
+                                                  {' | '}
+                                                  Credits: <span className="text-gray-400">{rd.debug.credits}</span>
+                                                </div>
+                                              </div>
+                                            ) : (
+                                              <span className="text-gray-600 text-[9px]">No debug info (likely network error — check browser console)</span>
+                                            )}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                          </Fragment>
                         ))}
                       </tbody>
                     </table>

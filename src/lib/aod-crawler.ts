@@ -89,6 +89,22 @@ const CRAWLEO_API_URL = 'https://api.crawleo.dev/crawl'
 // CRAWL RESULT TYPE
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+export interface CrawlDebugInfo {
+  url: string                // The URL that was fetched
+  crawleoHttpStatus: number  // HTTP status from Crawleo API
+  pageStatusCode: number     // HTTP status of the crawled page
+  htmlSize: number           // Size of raw HTML response
+  markdownSize: number       // Size of markdown response
+  credits: number            // Crawleo credits used
+  timingMs: number           // Time taken for this crawl
+  retryCount: number         // Number of retries
+  errorMsg: string           // Error from Crawleo if any
+  aodOfferCount: number      // AOD offer count found
+  aPriceCount: number        // Number of a-price elements found
+  parseStrategy: string      // Which parse strategy found the price
+  rawPriceText: string       // The raw price text before parsing
+}
+
 export interface CrawlResult {
   domain: string
   region: string
@@ -99,6 +115,7 @@ export interface CrawlResult {
   priceDisplay: string // formatted like "€10.63" or "N/A"
   asin: string
   error?: string
+  debug?: CrawlDebugInfo
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -109,6 +126,13 @@ interface CrawleoResult {
   raw_html: string
   enhanced_html: string
   markdown: string
+  debug: {
+    crawleoHttpStatus: number
+    pageStatusCode: number
+    credits: number
+    errorMsg: string
+    retryCount: number
+  }
 }
 
 async function fetchWithCrawleo(
@@ -129,6 +153,10 @@ async function fetchWithCrawleo(
   }
 
   const apiURL = `${CRAWLEO_API_URL}?${params.toString()}`
+  let lastCrawleoStatus = 0
+  let lastPageStatus = 0
+  let lastErrorMsg = ''
+  let lastCredits = 0
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -144,35 +172,57 @@ async function fetchWithCrawleo(
         signal: AbortSignal.timeout(120000),
       })
 
+      lastCrawleoStatus = response.status
+
       if (!response.ok) {
         const body = await response.text().catch(() => '')
+        lastErrorMsg = `Crawleo API HTTP ${response.status}: ${body.slice(0, 500)}`
         console.error(`[Crawleo] HTTP ${response.status} (attempt ${attempt + 1}/${maxRetries + 1}): ${body.slice(0, 300)}`)
         if (attempt < maxRetries) continue
-        return null
+        // Return partial result with debug info even on failure
+        return {
+          raw_html: '', enhanced_html: '', markdown: '',
+          debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: 0, credits: 0, errorMsg: lastErrorMsg, retryCount: attempt }
+        }
       }
 
       const data = await response.json()
+      lastCredits = data.credits ?? 0
 
       if (!data.results || data.results.length === 0) {
+        lastErrorMsg = 'Crawleo returned no results'
         console.error(`[Crawleo] No results returned`)
         if (attempt < maxRetries) continue
-        return null
+        return {
+          raw_html: '', enhanced_html: '', markdown: '',
+          debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: 0, credits: lastCredits, errorMsg: lastErrorMsg, retryCount: attempt }
+        }
       }
 
       const result = data.results[0]
       const statusCode = result.status_code ?? 0
+      lastPageStatus = statusCode
       const errorMsg = result.error ?? ''
+      lastErrorMsg = errorMsg
 
       if (errorMsg) {
         console.error(`[Crawleo] Error in result: ${errorMsg}`)
         if (attempt < maxRetries) continue
-        return null
+        // Return with page status and error info even if error
+        return {
+          raw_html: result.raw_html ?? '', enhanced_html: result.enhanced_html ?? '', markdown: result.markdown ?? '',
+          debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: statusCode, credits: lastCredits, errorMsg, retryCount: attempt }
+        }
       }
 
       if (![200, 404].includes(statusCode)) {
+        lastErrorMsg = `Page returned HTTP ${statusCode}`
         console.error(`[Crawleo] Page status: ${statusCode}`)
         if (attempt < maxRetries) continue
-        return null
+        return {
+          raw_html: result.raw_html ?? '', enhanced_html: result.enhanced_html ?? '', markdown: result.markdown ?? '',
+          debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: statusCode, credits: lastCredits, errorMsg: lastErrorMsg, retryCount: attempt }
+        }
       }
 
       const rawHtml = result.raw_html ?? ''
@@ -181,16 +231,23 @@ async function fetchWithCrawleo(
       const credits = data.credits ?? 0
 
       console.log(`[Crawleo] Success! Credits: ${credits}, raw_html: ${rawHtml.length} chars, markdown: ${markdown.length} chars`)
-      return { raw_html: rawHtml, enhanced_html: enhancedHtml, markdown }
+      return { raw_html: rawHtml, enhanced_html: enhancedHtml, markdown, debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: statusCode, credits, errorMsg: '', retryCount: attempt } }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
+      lastErrorMsg = `Fetch error: ${msg}`
       console.error(`[Crawleo] Error (attempt ${attempt + 1}/${maxRetries + 1}): ${msg}`)
       if (attempt < maxRetries) continue
-      return null
+      return {
+        raw_html: '', enhanced_html: '', markdown: '',
+        debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: 0, credits: lastCredits, errorMsg: lastErrorMsg, retryCount: attempt }
+      }
     }
   }
 
-  return null
+  return {
+    raw_html: '', enhanced_html: '', markdown: '',
+    debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: lastPageStatus, credits: lastCredits, errorMsg: lastErrorMsg || 'Max retries exceeded', retryCount: maxRetries }
+  }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -240,6 +297,10 @@ interface ParsedResult {
   currency: string
   name: string
   image: string
+  parseStrategy: string
+  rawPriceText: string
+  aodOfferCount: number
+  aPriceCount: number
 }
 
 function parseNumberWithCurrency(numberStr: string, currency: string): PriceResult | null {
@@ -585,12 +646,12 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
   // Only return N/A if confirmed no offers
   if (totalOffers === 0 && !hasPriceElements && !hasAPriceElements) {
     console.log(`[Parse] No offers at all (offer-count=0, no price elements) → N/A`)
-    return { price: 'N/A', currency: defaultCurrency, name, image }
+    return { price: 'N/A', currency: defaultCurrency, name, image, parseStrategy: 'no-offers', rawPriceText: `offerCount=${totalOffers}, aPriceCount=${aPriceElements.length}`, aodOfferCount: totalOffers, aPriceCount: aPriceElements.length }
   }
 
   if (hasNoOfferPhrase && !hasAPriceElements && !hasPriceElements) {
     console.log(`[Parse] No offers detected (no-offer phrases, no price elements) → N/A`)
-    return { price: 'N/A', currency: defaultCurrency, name, image }
+    return { price: 'N/A', currency: defaultCurrency, name, image, parseStrategy: 'no-offer-phrases', rawPriceText: `no-offer phrases found`, aodOfferCount: totalOffers, aPriceCount: aPriceElements.length }
   }
 
   // ━━━ Strategy 1: Accessibility label (BEST) ━━━
@@ -601,7 +662,7 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
     const priceResult = extractPriceFromText(accText, defaultCurrency)
     if (priceResult) {
       console.log(`[Parse] Price from accessibility label: ${accText} -> ${JSON.stringify(priceResult)}`)
-      return { ...priceResult, name, image }
+      return { ...priceResult, name, image, parseStrategy: 'accessibility-label', rawPriceText: accText, aodOfferCount: totalOffers, aPriceCount: aPriceElements.length }
     }
   }
 
@@ -621,7 +682,7 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
       if (priceVal > 0) {
         const currency = identifyCurrency(symbol, defaultCurrency)
         console.log(`[Parse] Price from a-price components: ${symbol}${wholeRaw}.${fraction} -> ${wholeClean}.${fraction} ${currency}`)
-        return { price: `${wholeClean}.${fraction}`, currency, name, image }
+        return { price: `${wholeClean}.${fraction}`, currency, name, image, parseStrategy: 'a-price-components', rawPriceText: `${symbol}${wholeRaw}.${fraction}`, aodOfferCount: totalOffers, aPriceCount: aPriceElements.length }
       }
     } catch {
       // fall through
@@ -639,7 +700,7 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
         const val = parseFloat(priceResult.price)
         if (val >= 0.5) {
           console.log(`[Parse] Price from a-offscreen: ${priceText} -> ${JSON.stringify(priceResult)}`)
-          return { ...priceResult, name, image }
+          return { ...priceResult, name, image, parseStrategy: 'a-offscreen', rawPriceText: priceText, aodOfferCount: totalOffers, aPriceCount: aPriceElements.length }
         }
       } catch {
         // fall through
@@ -651,7 +712,7 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
   const mdPriceResult = extractPriceFromMarkdown(mdClean, defaultCurrency)
   if (mdPriceResult) {
     console.log(`[Parse] Price from markdown: ${JSON.stringify(mdPriceResult)}`)
-    return { ...mdPriceResult, name, image }
+    return { ...mdPriceResult, name, image, parseStrategy: 'markdown', rawPriceText: mdClean.slice(0, 100), aodOfferCount: totalOffers, aPriceCount: aPriceElements.length }
   }
 
   // ── Fallback: check for no-offer phrases if we couldn't find a price ──
@@ -661,12 +722,12 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
 
     if (hasNoOfferPhrase && (noOtherSellers || noSellersAr || totalOffers === -1)) {
       console.log(`[Parse] No offers detected (no featured + no other sellers) → N/A`)
-      return { price: 'N/A', currency: defaultCurrency, name, image }
+      return { price: 'N/A', currency: defaultCurrency, name, image, parseStrategy: 'fallback-no-offers', rawPriceText: 'no other sellers', aodOfferCount: totalOffers, aPriceCount: aPriceElements.length }
     }
   }
 
   console.log(`[Parse] No price found for ${regionKey} → N/A`)
-  return { price: 'N/A', currency: defaultCurrency, name, image }
+  return { price: 'N/A', currency: defaultCurrency, name, image, parseStrategy: 'no-price-found', rawPriceText: '', aodOfferCount: totalOffers, aPriceCount: aPriceElements.length }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -719,6 +780,7 @@ export async function crawlRegion(
 
   try {
     console.log(`[crawlRegion] Crawling ${asin} on ${region.domain} via Crawleo...`)
+    const startTime = Date.now()
 
     // Build offer-listing URL — this shows all seller offers (same as AOD)
     // The AOD AJAX endpoint returns 404 via Crawleo, so we use /gp/offer-listing/ instead
@@ -728,9 +790,31 @@ export async function crawlRegion(
 
     // Fetch via Crawleo API with JavaScript rendering and geolocation
     const crawleoResult = await fetchWithCrawleo(url, crawleoApiKey, region.geo)
+    const timingMs = Date.now() - startTime
+
+    const debugBase: CrawlDebugInfo = {
+      url,
+      crawleoHttpStatus: crawleoResult?.debug?.crawleoHttpStatus ?? 0,
+      pageStatusCode: crawleoResult?.debug?.pageStatusCode ?? 0,
+      htmlSize: (crawleoResult?.raw_html ?? '').length,
+      markdownSize: (crawleoResult?.markdown ?? '').length,
+      credits: crawleoResult?.debug?.credits ?? 0,
+      timingMs,
+      retryCount: crawleoResult?.debug?.retryCount ?? 0,
+      errorMsg: crawleoResult?.debug?.errorMsg ?? '',
+      aodOfferCount: -1,
+      aPriceCount: -1,
+      parseStrategy: '',
+      rawPriceText: '',
+    }
 
     if (!crawleoResult) {
-      return { ...na, error: 'Failed to fetch offer listing page from Crawleo' }
+      return { ...na, error: 'Failed to fetch offer listing page from Crawleo', debug: debugBase }
+    }
+
+    // If Crawleo returned an error (like sandbox inactive), include it
+    if (crawleoResult.debug?.errorMsg && !crawleoResult.raw_html) {
+      return { ...na, error: crawleoResult.debug.errorMsg, debug: debugBase }
     }
 
     // Parse the Crawleo response — prefer raw_html for accurate price extraction
@@ -746,9 +830,16 @@ export async function crawlRegion(
       currency: parsed.currency,
       priceDisplay: formatPriceDisplay(parsed.price, parsed.currency),
       asin,
+      debug: {
+        ...debugBase,
+        aodOfferCount: parsed.aodOfferCount,
+        aPriceCount: parsed.aPriceCount,
+        parseStrategy: parsed.parseStrategy,
+        rawPriceText: parsed.rawPriceText,
+      },
     }
 
-    console.log(`[crawlRegion] Result for ${asin} on ${region.domain}: price=${result.price} display=${result.priceDisplay}`)
+    console.log(`[crawlRegion] Result for ${asin} on ${region.domain}: price=${result.price} display=${result.priceDisplay} (${parsed.parseStrategy}, ${timingMs}ms)`)
     return result
   } catch (e) {
     console.error(`[crawlRegion] Error for ${asin} on ${region.domain}:`, e)

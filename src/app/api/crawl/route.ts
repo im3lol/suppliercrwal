@@ -31,6 +31,21 @@ interface CrawlResultItem {
   priceDisplay: string
   asin: string
   error?: string
+  debug?: {
+    url: string
+    crawleoHttpStatus: number
+    pageStatusCode: number
+    htmlSize: number
+    markdownSize: number
+    credits: number
+    timingMs: number
+    retryCount: number
+    errorMsg: string
+    aodOfferCount: number
+    aPriceCount: number
+    parseStrategy: string
+    rawPriceText: string
+  }
 }
 
 export async function POST(request: NextRequest) {
