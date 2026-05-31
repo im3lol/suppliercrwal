@@ -8,7 +8,8 @@ import {
   LayoutDashboard, History, Settings, Shield,
   Package, MapPin, FileText, StopCircle,
   Archive, FileSpreadsheet, Filter, Search,
-  Calendar, TrendingUp, ArrowUpDown, ArrowUp, ArrowDown
+  Calendar, TrendingUp, ArrowUpDown, ArrowUp, ArrowDown,
+  Bug
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -36,7 +37,7 @@ interface Product {
   prices: Record<string, PriceInfo>
 }
 
-type ViewMode = 'live' | 'history' | 'settings'
+type ViewMode = 'live' | 'history' | 'settings' | 'debug'
 type SortField = 'asin' | 'name' | 'lastScan' | 'COM' | 'EG' | 'DE' | 'SA' | 'AE'
 type SortDir = 'asc' | 'desc'
 
@@ -110,6 +111,12 @@ export default function Home() {
   const [sortField, setSortField] = useState<SortField>('lastScan')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [historySelectedIds, setHistorySelectedIds] = useState<Set<string>>(new Set())
+
+  // Debug logs state
+  const [debugLogs, setDebugLogs] = useState<any[]>([])
+  const [debugLoading, setDebugLoading] = useState(false)
+  const [expandedDebugId, setExpandedDebugId] = useState<string | null>(null)
+  const [debugFilter, setDebugFilter] = useState<'all' | 'error' | 'success' | 'na'>('all')
 
   const { toast } = useToast()
 
@@ -191,6 +198,22 @@ export default function Home() {
   useEffect(() => {
     fetchProducts()
   }, [fetchProducts])
+
+  // Fetch debug logs from server
+  const fetchDebugLogs = useCallback(async () => {
+    setDebugLoading(true)
+    try {
+      const res = await fetch('/api/logs?limit=100')
+      const data = await res.json()
+      if (data.success) {
+        setDebugLogs(data.logs)
+      }
+    } catch (e) {
+      console.error('Failed to fetch debug logs:', e)
+    } finally {
+      setDebugLoading(false)
+    }
+  }, [])
 
   // ── Timestamp helper ──
   const ts = () =>
@@ -555,6 +578,18 @@ export default function Home() {
             <Shield className="w-3.5 h-3.5" />
             Proxy Health
           </button>
+          <button
+            onClick={() => { setViewMode('debug'); fetchDebugLogs() }}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded text-xs transition-colors ${
+              viewMode === 'debug'
+                ? 'bg-orange-500/10 text-orange-400'
+                : 'text-gray-500 hover:text-gray-300 hover:bg-[#1a1a1a]'
+            }`}
+          >
+            <Bug className="w-3.5 h-3.5" />
+            Debug Logs
+            {viewMode === 'debug' && <ChevronRight className="w-3 h-3 ml-auto" />}
+          </button>
         </nav>
 
         <div className="p-3 border-t border-[#1a1a1a] space-y-2">
@@ -645,6 +680,19 @@ export default function Home() {
               >
                 <Settings className="w-3 h-3 mr-1" />
                 SETTINGS
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setViewMode('debug'); fetchDebugLogs() }}
+                className={`h-6 text-[10px] px-3 rounded ${
+                  viewMode === 'debug'
+                    ? 'bg-orange-500 text-black hover:bg-orange-600'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <Bug className="w-3 h-3 mr-1" />
+                DEBUG
               </Button>
             </div>
           </div>
@@ -1480,6 +1528,306 @@ export default function Home() {
               </section>
             </>
           )}
+
+{/* ═══════════════════════════════════════════════════════════
+    DEBUG LOGS VIEW
+═══════════════════════════════════════════════════════════ */}
+{viewMode === 'debug' && (
+  <>
+    {/* ── HEADER WITH CONTROLS ── */}
+    <section className="bg-[#111111] rounded-lg border border-[#1a1a1a] overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[#1a1a1a]">
+        <div className="flex items-center gap-2">
+          <Bug className="w-4 h-4 text-orange-400" />
+          <h2 className="text-xs font-bold tracking-wider">DEBUG LOGS</h2>
+          <span className="text-[10px] text-gray-500">{debugLogs.length} entries</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {(['all', 'error', 'success', 'na'] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => setDebugFilter(f)}
+              className={`px-2 py-1 rounded text-[10px] font-bold ${
+                debugFilter === f
+                  ? 'bg-orange-500 text-black'
+                  : 'bg-[#1a1a1a] text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              {f === 'all' ? 'ALL' : f === 'error' ? 'ERRORS' : f === 'success' ? 'FOUND' : 'N/A'}
+            </button>
+          ))}
+          <Button
+            variant="outline"
+            size="sm"
+            className="bg-transparent border-[#2a2a2a] text-gray-400 hover:text-gray-200 hover:border-[#3a3a3a] text-[10px] h-6"
+            onClick={fetchDebugLogs}
+            disabled={debugLoading}
+          >
+            <RefreshCw className={`w-3 h-3 mr-1 ${debugLoading ? 'animate-spin' : ''}`} />
+            REFRESH
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="bg-transparent border-red-500/50 text-red-400 hover:bg-red-500/10 text-[10px] h-6"
+            onClick={async () => {
+              await fetch('/api/logs', { method: 'DELETE' })
+              setDebugLogs([])
+              toast({ title: 'Logs Cleared' })
+            }}
+          >
+            <Trash2 className="w-3 h-3 mr-1" />
+            CLEAR
+          </Button>
+        </div>
+      </div>
+    </section>
+
+    {/* ── LOG ENTRIES ── */}
+    {debugLoading && debugLogs.length === 0 ? (
+      <div className="bg-[#111111] rounded-lg border border-[#1a1a1a] p-8 text-center">
+        <Loader2 className="w-6 h-6 animate-spin mx-auto text-orange-400 mb-2" />
+        <p className="text-xs text-gray-500">Loading debug logs...</p>
+      </div>
+    ) : debugLogs.length === 0 ? (
+      <div className="bg-[#111111] rounded-lg border border-[#1a1a1a] p-8 text-center">
+        <Bug className="w-8 h-8 mx-auto text-gray-700 mb-3" />
+        <p className="text-xs text-gray-500 mb-1">No debug logs yet</p>
+        <p className="text-[10px] text-gray-600">Crawl some ASINs first, then check here for detailed logs</p>
+      </div>
+    ) : (
+      <div className="space-y-2 max-h-[calc(100vh-200px)] overflow-y-auto">
+        {debugLogs
+          .filter(log => {
+            if (debugFilter === 'all') return true
+            if (debugFilter === 'error') return log.result?.error || log.response?.errorMsg
+            if (debugFilter === 'success') return log.result?.price && log.result.price !== 'N/A'
+            if (debugFilter === 'na') return log.result?.price === 'N/A' && !log.result?.error
+            return true
+          })
+          .map((log) => {
+            const isExpanded = expandedDebugId === log.id
+            const hasError = log.result?.error || log.response?.errorMsg
+            const hasPrice = log.result?.price && log.result.price !== 'N/A'
+            
+            return (
+              <div key={log.id} className={`bg-[#111111] rounded-lg border overflow-hidden ${
+                hasError ? 'border-red-500/30' : hasPrice ? 'border-green-500/30' : 'border-yellow-500/30'
+              }`}>
+                {/* Summary row */}
+                <div
+                  className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-[#1a1a1a] transition-colors"
+                  onClick={() => setExpandedDebugId(isExpanded ? null : log.id)}
+                >
+                  {/* Status indicator */}
+                  <div className={`w-2 h-2 rounded-full shrink-0 ${
+                    hasError ? 'bg-red-500' : hasPrice ? 'bg-green-500' : 'bg-yellow-500'
+                  }`} />
+                  
+                  {/* Time */}
+                  <span className="text-[10px] text-gray-600 w-36 shrink-0">
+                    {new Date(log.timestamp).toLocaleString()}
+                  </span>
+                  
+                  {/* Region */}
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    log.region === 'COM' ? 'bg-blue-500/10 text-blue-400' :
+                    log.region === 'EG' ? 'bg-green-500/10 text-green-400' :
+                    log.region === 'DE' ? 'bg-yellow-500/10 text-yellow-400' :
+                    log.region === 'SA' ? 'bg-purple-500/10 text-purple-400' :
+                    log.region === 'AE' ? 'bg-cyan-500/10 text-cyan-400' :
+                    'bg-gray-500/10 text-gray-400'
+                  }`}>
+                    {log.region}
+                  </span>
+                  
+                  {/* ASIN */}
+                  <span className="text-[10px] text-orange-400 font-mono">{log.asin}</span>
+                  
+                  {/* Price */}
+                  <span className={`text-[11px] font-mono font-bold ${
+                    hasError ? 'text-red-400' : hasPrice ? 'text-green-400' : 'text-yellow-400'
+                  }`}>
+                    {hasError ? `ERROR: ${(log.result?.error || log.response?.errorMsg)?.slice(0, 60)}` : log.result?.priceDisplay || 'N/A'}
+                  </span>
+                  
+                  {/* Strategy */}
+                  {log.parsing?.strategy && (
+                    <span className="text-[9px] text-gray-600 bg-[#1a1a1a] px-1.5 py-0.5 rounded">
+                      {log.parsing.strategy}
+                    </span>
+                  )}
+                  
+                  {/* Timing */}
+                  <span className="text-[10px] text-gray-600 ml-auto">
+                    {(log.response?.timingMs / 1000).toFixed(1)}s
+                  </span>
+                  
+                  {/* Expand arrow */}
+                  <span className="text-gray-600 text-[10px]">
+                    {isExpanded ? '▲' : '▼'}
+                  </span>
+                </div>
+                
+                {/* Expanded detail */}
+                {isExpanded && (
+                  <div className="border-t border-[#1a1a1a] bg-[#080808] p-4 space-y-4">
+                    {/* Request details */}
+                    <div>
+                      <h4 className="text-[10px] font-bold text-orange-400 tracking-wider mb-2">REQUEST</h4>
+                      <div className="bg-[#0a0a0a] rounded border border-[#1a1a1a] p-3 text-[10px] font-mono space-y-1">
+                        <div><span className="text-gray-500">Target URL:</span> <span className="text-gray-300">{log.request?.targetUrl}</span></div>
+                        <div><span className="text-gray-500">Crawleo API:</span> <span className="text-gray-300">{log.request?.crawleoApiUrl?.slice(0, 120)}...</span></div>
+                        <div><span className="text-gray-500">Geolocation:</span> <span className="text-gray-300">{log.request?.geolocation}</span></div>
+                        <div><span className="text-gray-500">API Key:</span> <span className="text-gray-300">{log.request?.apiKeyPrefix}</span></div>
+                      </div>
+                    </div>
+                    
+                    {/* Response details */}
+                    <div>
+                      <h4 className="text-[10px] font-bold text-orange-400 tracking-wider mb-2">RESPONSE</h4>
+                      <div className="bg-[#0a0a0a] rounded border border-[#1a1a1a] p-3 text-[10px] font-mono space-y-1">
+                        <div>
+                          <span className="text-gray-500">Crawleo Status:</span>{' '}
+                          <span className={log.response?.crawleoHttpStatus === 200 ? 'text-green-400' : 'text-red-400'}>
+                            HTTP {log.response?.crawleoHttpStatus}
+                          </span>
+                          {' | '}
+                          <span className="text-gray-500">Page Status:</span>{' '}
+                          <span className={log.response?.pageStatusCode === 200 ? 'text-green-400' : 'text-yellow-400'}>
+                            HTTP {log.response?.pageStatusCode}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Timing:</span> <span className="text-gray-300">{(log.response?.timingMs / 1000).toFixed(1)}s</span>
+                          {' | '}
+                          <span className="text-gray-500">Credits:</span> <span className="text-gray-300">{log.response?.credits}</span>
+                          {' | '}
+                          <span className="text-gray-500">Retries:</span> <span className="text-gray-300">{log.response?.retryCount}</span>
+                        </div>
+                        {log.response?.errorMsg && (
+                          <div className="text-red-400">
+                            Error: {log.response.errorMsg}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {/* Content analysis */}
+                    <div>
+                      <h4 className="text-[10px] font-bold text-orange-400 tracking-wider mb-2">CONTENT ANALYSIS</h4>
+                      <div className="bg-[#0a0a0a] rounded border border-[#1a1a1a] p-3 text-[10px] font-mono space-y-1">
+                        <div>
+                          <span className="text-gray-500">HTML Size:</span> <span className="text-gray-300">{log.content?.htmlSize?.toLocaleString()} chars</span>
+                          {' | '}
+                          <span className="text-gray-500">Markdown Size:</span> <span className="text-gray-300">{log.content?.markdownSize?.toLocaleString()} chars</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Page Title:</span> <span className="text-gray-300">{log.content?.title}</span>
+                        </div>
+                        <div className="flex gap-3">
+                          <span className={log.content?.hasOfferListing ? 'text-green-400' : 'text-red-400'}>
+                            {log.content?.hasOfferListing ? '✓' : '✗'} Offer Listing
+                          </span>
+                          <span className={log.content?.hasAodContainer ? 'text-green-400' : 'text-red-400'}>
+                            {log.content?.hasAodContainer ? '✓' : '✗'} AOD Container
+                          </span>
+                          <span className={log.content?.hasPriceElements ? 'text-green-400' : 'text-red-400'}>
+                            {log.content?.hasPriceElements ? '✓' : '✗'} Price Elements
+                          </span>
+                          <span className={log.content?.detectedNoOffers ? 'text-yellow-400' : 'text-gray-600'}>
+                            {log.content?.detectedNoOffers ? '⚠' : '—'} No Offers
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* Parsing strategy log */}
+                    <div>
+                      <h4 className="text-[10px] font-bold text-orange-400 tracking-wider mb-2">PARSING STRATEGIES</h4>
+                      <div className="bg-[#0a0a0a] rounded border border-[#1a1a1a] overflow-hidden">
+                        <table className="w-full text-[10px]">
+                          <thead>
+                            <tr className="border-b border-[#1a1a1a] text-gray-600">
+                              <th className="text-left px-3 py-1.5 w-32">Strategy</th>
+                              <th className="text-left px-3 py-1.5 w-16">Matched</th>
+                              <th className="text-left px-3 py-1.5">Raw Match</th>
+                              <th className="text-left px-3 py-1.5 w-20">Parsed</th>
+                              <th className="text-left px-3 py-1.5">Notes</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {log.parsing?.strategyLog?.map((s: any, i: number) => (
+                              <tr key={i} className={`border-b border-[#1a1a1a]/50 ${s.matched ? 'bg-green-500/5' : ''}`}>
+                                <td className="px-3 py-1.5">
+                                  <span className={s.matched ? 'text-green-400 font-bold' : 'text-gray-400'}>{s.strategy}</span>
+                                </td>
+                                <td className="px-3 py-1.5">
+                                  {s.matched ? <span className="text-green-400">✓ YES</span> : <span className="text-gray-600">—</span>}
+                                </td>
+                                <td className="px-3 py-1.5 text-gray-400 font-mono max-w-xs truncate">{s.rawMatch}</td>
+                                <td className="px-3 py-1.5 text-gray-300 font-mono">{s.parsedValue || '—'}</td>
+                                <td className="px-3 py-1.5 text-gray-500">{s.notes}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    
+                    {/* Result */}
+                    <div>
+                      <h4 className="text-[10px] font-bold text-orange-400 tracking-wider mb-2">RESULT</h4>
+                      <div className="bg-[#0a0a0a] rounded border border-[#1a1a1a] p-3 text-[10px] font-mono space-y-1">
+                        <div>
+                          <span className="text-gray-500">Price:</span>{' '}
+                          <span className={hasPrice ? 'text-green-400 font-bold' : 'text-yellow-400'}>
+                            {log.result?.priceDisplay || 'N/A'}
+                          </span>
+                          {' | '}
+                          <span className="text-gray-500">Currency:</span> <span className="text-gray-300">{log.parsing?.currency}</span>
+                          {' | '}
+                          <span className="text-gray-500">Strategy:</span> <span className="text-gray-300">{log.parsing?.strategy}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Raw Price Text:</span> <span className="text-gray-300">{log.parsing?.rawPriceText}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Offers Count:</span> <span className="text-gray-300">{log.parsing?.aodOfferCount}</span>
+                          {' | '}
+                          <span className="text-gray-500">a-Price Count:</span> <span className="text-gray-300">{log.parsing?.aPriceCount}</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* HTML Snippet */}
+                    {log.content?.htmlSnippet && (
+                      <div>
+                        <h4 className="text-[10px] font-bold text-orange-400 tracking-wider mb-2">HTML SNIPPET (first 2000 chars)</h4>
+                        <pre className="bg-[#0a0a0a] rounded border border-[#1a1a1a] p-3 text-[9px] text-gray-500 max-h-48 overflow-auto whitespace-pre-wrap font-mono">
+                          {log.content.htmlSnippet}
+                        </pre>
+                      </div>
+                    )}
+                    
+                    {/* Markdown Snippet */}
+                    {log.content?.markdownSnippet && (
+                      <div>
+                        <h4 className="text-[10px] font-bold text-orange-400 tracking-wider mb-2">MARKDOWN SNIPPET (first 1000 chars)</h4>
+                        <pre className="bg-[#0a0a0a] rounded border border-[#1a1a1a] p-3 text-[9px] text-gray-500 max-h-48 overflow-auto whitespace-pre-wrap font-mono">
+                          {log.content.markdownSnippet}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+      </div>
+    )}
+  </>
+)}
         </div>
 
         {/* ── FOOTER ── */}

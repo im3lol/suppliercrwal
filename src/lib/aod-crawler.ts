@@ -778,6 +778,10 @@ export async function crawlRegion(
     return { ...na, error: 'Crawleo API key is required' }
   }
 
+  // Initialize the detailed log builder
+  const { CrawlLogBuilder, addLog } = await import('./crawl-logger')
+  const logBuilder = new CrawlLogBuilder(asin, regionKey)
+
   try {
     console.log(`[crawlRegion] Crawling ${asin} on ${region.domain} via Crawleo...`)
     const startTime = Date.now()
@@ -788,9 +792,42 @@ export async function crawlRegion(
     const offerPath = region.offerListingPath || '/gp/offer-listing/'
     const url = `https://www.${region.domain}${offerPath}${asin}`
 
+    // Build Crawleo API URL for logging
+    const crawleoParams = new URLSearchParams({
+      urls: url,
+      render_js: 'true',
+      raw_html: 'true',
+      enhanced_html: 'true',
+      markdown: 'true',
+    })
+    if (region.geo) crawleoParams.set('geolocation', region.geo)
+    const crawleoFullUrl = `${CRAWLEO_API_URL}?${crawleoParams.toString()}`
+
+    // Log request details
+    logBuilder.setRequest({
+      crawleoApiUrl: crawleoFullUrl,
+      targetUrl: url,
+      geolocation: region.geo,
+      apiKey: crawleoApiKey,
+    })
+
+    console.log(`[crawlRegion] Request: URL=${url}, geo=${region.geo}, apikey=${crawleoApiKey.slice(0, 8)}...`)
+
     // Fetch via Crawleo API with JavaScript rendering and geolocation
     const crawleoResult = await fetchWithCrawleo(url, crawleoApiKey, region.geo)
     const timingMs = Date.now() - startTime
+
+    // Log response details
+    logBuilder.setResponse({
+      crawleoHttpStatus: crawleoResult?.debug?.crawleoHttpStatus ?? 0,
+      pageStatusCode: crawleoResult?.debug?.pageStatusCode ?? 0,
+      credits: crawleoResult?.debug?.credits ?? 0,
+      retryCount: crawleoResult?.debug?.retryCount ?? 0,
+      timingMs,
+      errorMsg: crawleoResult?.debug?.errorMsg ?? '',
+    })
+
+    console.log(`[crawlRegion] Crawleo response: status=${crawleoResult?.debug?.crawleoHttpStatus}, page=${crawleoResult?.debug?.pageStatusCode}, html=${(crawleoResult?.raw_html ?? '').length} chars, time=${timingMs}ms`)
 
     const debugBase: CrawlDebugInfo = {
       url,
@@ -809,17 +846,41 @@ export async function crawlRegion(
     }
 
     if (!crawleoResult) {
+      logBuilder.setResult('N/A', 'N/A', 'Failed to fetch offer listing page from Crawleo')
+      addLog(logBuilder.build())
       return { ...na, error: 'Failed to fetch offer listing page from Crawleo', debug: debugBase }
     }
 
     // If Crawleo returned an error (like sandbox inactive), include it
     if (crawleoResult.debug?.errorMsg && !crawleoResult.raw_html) {
+      logBuilder.setResult('N/A', 'N/A', crawleoResult.debug.errorMsg)
+      addLog(logBuilder.build())
       return { ...na, error: crawleoResult.debug.errorMsg, debug: debugBase }
     }
 
     // Parse the Crawleo response — prefer raw_html for accurate price extraction
     const htmlForParsing = crawleoResult.raw_html || crawleoResult.enhanced_html
+
+    // Log content analysis
+    logBuilder.setContent(htmlForParsing, crawleoResult.markdown)
+
+    console.log(`[crawlRegion] Content analysis: htmlSize=${htmlForParsing.length}, mdSize=${crawleoResult.markdown.length}`)
+
     const parsed = parsePrice(htmlForParsing, crawleoResult.markdown, regionKey)
+
+    // Log parsing details with step-by-step strategy attempts
+    const strategyLog = buildStrategyLog(htmlForParsing, crawleoResult.markdown, regionKey, parsed)
+    logBuilder.setParsing({
+      strategy: parsed.parseStrategy,
+      rawPriceText: parsed.rawPriceText,
+      parsedPrice: parsed.price,
+      currency: parsed.currency,
+      aodOfferCount: parsed.aodOfferCount,
+      aPriceCount: parsed.aPriceCount,
+    })
+    for (const sl of strategyLog) {
+      logBuilder.addStrategyLog(sl)
+    }
 
     const result: CrawlResult = {
       domain: region.domain,
@@ -839,12 +900,111 @@ export async function crawlRegion(
       },
     }
 
+    logBuilder.setResult(result.price, result.priceDisplay, result.error || '')
+    addLog(logBuilder.build())
+
     console.log(`[crawlRegion] Result for ${asin} on ${region.domain}: price=${result.price} display=${result.priceDisplay} (${parsed.parseStrategy}, ${timingMs}ms)`)
     return result
   } catch (e) {
+    const errMsg = String(e)
     console.error(`[crawlRegion] Error for ${asin} on ${region.domain}:`, e)
-    return { ...na, error: String(e) }
+    logBuilder.setResult('N/A', 'N/A', errMsg)
+    addLog(logBuilder.build())
+    return { ...na, error: errMsg }
   }
+}
+
+/**
+ * Build step-by-step strategy log for debugging price parsing
+ */
+function buildStrategyLog(html: string, markdown: string, regionKey: string, parsed: ParsedResult): import('./crawl-logger').StrategyLogEntry[] {
+  const logs: import('./crawl-logger').StrategyLogEntry[] = []
+  const region = REGIONS[regionKey] ?? REGIONS.COM!
+  const htmlClean = html.replace(/[\u200e\u200f]/g, '')
+  const mdClean = markdown.replace(/[\u200e\u200f]/g, '')
+
+  // Strategy 0: No-offer detection
+  const lowerHtml = htmlClean.toLowerCase()
+  const lowerMd = mdClean.toLowerCase()
+  const noOfferPhrases = ['no featured offers', 'currently unavailable', 'no offers', 'no sellers', 'no other sellers']
+  const foundNoOffer = noOfferPhrases.filter(p => lowerHtml.includes(p) || lowerMd.includes(p))
+  logs.push({
+    strategy: 'no-offer-detection',
+    attempted: true,
+    matched: foundNoOffer.length > 0,
+    rawMatch: foundNoOffer.join(', ') || 'none',
+    parsedValue: '',
+    notes: foundNoOffer.length > 0 ? `Found phrases: ${foundNoOffer.join(', ')}` : 'No no-offer phrases found',
+  })
+
+  // Strategy 1: Accessibility label
+  const accRegex = /<span[^>]*class="[^"]*aok-offscreen[^"]*apex-pricetopay[^"]*"[^>]*>\s*([^<]+?)\s*<\/span>/g
+  let accMatch: RegExpExecArray | null
+  const accMatches: string[] = []
+  while ((accMatch = accRegex.exec(htmlClean)) !== null) {
+    accMatches.push(accMatch[1].trim())
+  }
+  logs.push({
+    strategy: 'accessibility-label',
+    attempted: true,
+    matched: accMatches.length > 0 && parsed.parseStrategy === 'accessibility-label',
+    rawMatch: accMatches.join(' | ') || 'none',
+    parsedValue: parsed.parseStrategy === 'accessibility-label' ? parsed.price : '',
+    notes: accMatches.length > 0 ? `Found ${accMatches.length} accessibility label(s)` : 'No accessibility labels found',
+  })
+
+  // Strategy 2: a-price components
+  const priceBlockRegex = /<span[^>]*class="[^"]*a-price[^"]*"[^>]*>[\s\S]*?<span[^>]*class="[^"]*a-price-symbol[^"]*"[^>]*>\s*([^<]+?)\s*<\/span>[\s\S]*?<span[^>]*class="[^"]*a-price-whole[^"]*"[^>]*>([\s\S]*?)<\/span>[\s\S]*?<span[^>]*class="[^"]*a-price-fraction[^"]*"[^>]*>\s*([^<]+?)\s*<\/span>/g
+  const priceBlock = priceBlockRegex.exec(htmlClean)
+  logs.push({
+    strategy: 'a-price-components',
+    attempted: true,
+    matched: !!priceBlock && parsed.parseStrategy === 'a-price-components',
+    rawMatch: priceBlock ? `symbol=${priceBlock[1]}, whole=${priceBlock[2].replace(/<[^>]+>/g, '')}, fraction=${priceBlock[3]}` : 'none',
+    parsedValue: parsed.parseStrategy === 'a-price-components' ? parsed.price : '',
+    notes: priceBlock ? 'Found a-price component block' : 'No a-price component blocks found',
+  })
+
+  // Strategy 3: a-offscreen
+  const offscreenRegex = /<span[^>]*class="[^"]*a-offscreen[^"]*"[^>]*>\s*([^<]+?)\s*<\/span>/g
+  const offscreenMatches: string[] = []
+  let osMatch: RegExpExecArray | null
+  while ((osMatch = offscreenRegex.exec(htmlClean)) !== null) {
+    offscreenMatches.push(osMatch[1].trim())
+  }
+  logs.push({
+    strategy: 'a-offscreen',
+    attempted: true,
+    matched: offscreenMatches.length > 0 && parsed.parseStrategy === 'a-offscreen',
+    rawMatch: offscreenMatches.slice(0, 5).join(' | ') || 'none',
+    parsedValue: parsed.parseStrategy === 'a-offscreen' ? parsed.price : '',
+    notes: offscreenMatches.length > 0 ? `Found ${offscreenMatches.length} a-offscreen element(s)` : 'No a-offscreen elements found',
+  })
+
+  // Strategy 4: Markdown
+  const mdPricePatterns = [
+    { name: 'EUR postfix', regex: /([\d.,]+)\s*\u20ac/ },
+    { name: 'EUR prefix', regex: /\u20ac\s*([\d.,]+)/ },
+    { name: 'USD', regex: /\$\s*([\d.,]+)/ },
+    { name: 'SAR', regex: /SAR\s*([\d.,]+)/i },
+    { name: 'AED', regex: /AED\s*([\d.,]+)/i },
+    { name: 'EGP', regex: /EGP\s*([\d.,]+)/i },
+  ]
+  const mdMatches: string[] = []
+  for (const pat of mdPricePatterns) {
+    const m = mdClean.match(pat.regex)
+    if (m) mdMatches.push(`${pat.name}=${m[0]}`)
+  }
+  logs.push({
+    strategy: 'markdown',
+    attempted: true,
+    matched: parsed.parseStrategy === 'markdown',
+    rawMatch: mdMatches.join(', ') || 'none',
+    parsedValue: parsed.parseStrategy === 'markdown' ? parsed.price : '',
+    notes: mdMatches.length > 0 ? `Found ${mdMatches.length} markdown price pattern(s)` : 'No markdown price patterns found',
+  })
+
+  return logs
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
