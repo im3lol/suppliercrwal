@@ -225,8 +225,6 @@ export default function Home() {
       )
 
       // Crawl each region INDIVIDUALLY — one API call per region (~10-20s each)
-      // Calls the Crawleo service directly on port 3002, then saves to DB via Next.js
-      const CRAWLEO_PORT = 3002
       const crawlResults: Array<{ domain: string; region: string; name: string; image: string; price: string; currency: string; priceDisplay: string; asin: string; error?: string }> = []
 
       for (let r = 0; r < regionKeys.length; r++) {
@@ -244,8 +242,8 @@ export default function Home() {
         )
 
         try {
-          // Step 1: Call Crawleo service directly through gateway
-          const crawlRes = await fetch(`/?XTransformPort=${CRAWLEO_PORT}`, {
+          // Call the Next.js API which runs Python script via subprocess
+          const res = await fetch('/api/crawl', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -255,10 +253,10 @@ export default function Home() {
             }),
           })
 
-          const crawlData = await crawlRes.json()
+          const data = await res.json()
 
-          if (crawlData.success && crawlData.results && crawlData.results.length > 0) {
-            const result = crawlData.results[0]
+          if (data.success && data.results && data.results.length > 0) {
+            const result = data.results[0]
             crawlResults.push(result)
 
             if (result.price !== 'N/A') {
@@ -268,7 +266,7 @@ export default function Home() {
               regionResults.push(`${regionKey}: N/A`)
             }
           } else {
-            const errResult = { domain: '', region: regionKey, name: `Product ${asin}`, image: '', price: 'N/A', currency: '', priceDisplay: 'N/A', asin, error: crawlData.error || 'Crawl failed' }
+            const errResult = { domain: '', region: regionKey, name: `Product ${asin}`, image: '', price: 'N/A', currency: '', priceDisplay: 'N/A', asin, error: data.error || 'Crawl failed' }
             crawlResults.push(errResult)
             regionResults.push(`${regionKey}: Error`)
           }
@@ -278,17 +276,6 @@ export default function Home() {
           crawlResults.push(errResult)
           regionResults.push(`${regionKey}: NetErr`)
           console.error(`[Crawl] ${asin} on ${regionKey} failed:`, errMsg)
-        }
-
-        // Step 2: Save results to DB via Next.js API after each region
-        try {
-          await fetch('/api/crawl', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ asin, results: crawlResults }),
-          })
-        } catch {
-          // DB save failure is not critical for user experience
         }
 
         // Refresh products after each region so user sees live updates

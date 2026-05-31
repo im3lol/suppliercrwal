@@ -1,16 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { execFile } from 'child_process'
+import path from 'path'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// AOD CRAWLER API — Save Results to DB
+// AOD CRAWLER API
 //
-// The frontend calls the Crawleo mini-service (port 3002) directly
-// for price fetching, then calls this endpoint to save results to DB.
+// Crawl ASIN on a single region via Python subprocess (scrape.py).
+// The Python script calls the Crawleo API and parses AOD HTML.
 //
 // CRITICAL RULES:
 // - Prices come from AOD ONLY (All Offers Display)
 // - If AOD has no offers → return N/A
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+export const maxDuration = 60
+
+const SCRAPE_SCRIPT = path.join(process.cwd(), 'mini-services', 'scrapling-service', 'scrape.py')
 
 interface CrawlResultItem {
   domain: string
@@ -27,29 +33,91 @@ interface CrawlResultItem {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { asin, results } = body
+    const { asin, region, crawleoApiKey } = body
 
-    if (!asin) {
-      return NextResponse.json({ error: 'ASIN required' }, { status: 400 })
+    const cleanAsin = (asin || '').trim().toUpperCase()
+
+    if (!cleanAsin || !/^[A-Z0-9]{10}$/.test(cleanAsin)) {
+      return NextResponse.json({ error: 'Valid ASIN required' }, { status: 400 })
     }
 
-    if (!results || !Array.isArray(results) || results.length === 0) {
-      return NextResponse.json({ error: 'Results array required' }, { status: 400 })
+    if (!crawleoApiKey) {
+      return NextResponse.json({ error: 'Crawleo API key required' }, { status: 400 })
     }
 
-    const cleanAsin = asin.trim().toUpperCase()
-    const crawlResults: CrawlResultItem[] = results
+    const regionKey = (region || 'COM').trim().toUpperCase()
 
-    await saveResultsToDB(cleanAsin, crawlResults)
+    console.log(`[Crawl API] Crawling ${cleanAsin} on ${regionKey}...`)
+
+    // Call Python script via subprocess
+    const result = await new Promise<CrawlResultItem>((resolve) => {
+      execFile(
+        'python3',
+        [SCRAPE_SCRIPT, cleanAsin, regionKey, crawleoApiKey],
+        { timeout: 60000, maxBuffer: 5 * 1024 * 1024 },
+        (error, stdout, stderr) => {
+          if (error) {
+            console.error(`[Crawl] Error: ${error.message}`)
+            if (stderr) console.error(`[Crawl] stderr: ${stderr.slice(0, 300)}`)
+            resolve({
+              domain: '', region: regionKey, name: `Product ${cleanAsin}`,
+              image: '', price: 'N/A', currency: '', priceDisplay: 'N/A',
+              asin: cleanAsin, error: `Crawler error: ${error.message}`,
+            })
+            return
+          }
+
+          try {
+            // Find JSON line in output
+            const lines = stdout.trim().split('\n')
+            let jsonLine = ''
+            for (const line of lines) {
+              if (line.trim().startsWith('{')) {
+                jsonLine = line.trim()
+                break
+              }
+            }
+            if (!jsonLine) jsonLine = lines[lines.length - 1]
+
+            const data = JSON.parse(jsonLine)
+
+            resolve({
+              domain: data.domain || '',
+              region: data.region || regionKey,
+              name: data.name || `Product ${cleanAsin}`,
+              image: data.image || '',
+              price: data.price || 'N/A',
+              currency: data.currency || '',
+              priceDisplay: data.priceDisplay || 'N/A',
+              asin: cleanAsin,
+              error: data.error || undefined,
+            })
+          } catch (parseError) {
+            console.error(`[Crawl] Parse error: ${parseError}`)
+            console.error(`[Crawl] stdout: ${stdout.slice(0, 300)}`)
+            resolve({
+              domain: '', region: regionKey, name: `Product ${cleanAsin}`,
+              image: '', price: 'N/A', currency: '', priceDisplay: 'N/A',
+              asin: cleanAsin, error: `Parse error: ${String(parseError)}`,
+            })
+          }
+        }
+      )
+    })
+
+    // Save to DB
+    await saveResultsToDB(cleanAsin, [result])
+
+    console.log(`[Crawl API] ${cleanAsin} on ${regionKey}: price=${result.price} display=${result.priceDisplay}`)
 
     return NextResponse.json({
       success: true,
       asin: cleanAsin,
-      results: crawlResults,
+      results: [result],
     })
   } catch (e) {
     console.error('[Crawl API Error]:', e)
-    return NextResponse.json({ error: 'Save failed', details: String(e) }, { status: 500 })
+    return NextResponse.json({ error: 'Crawl failed', details: String(e) }, { status: 500 })
   }
 }
 
@@ -59,9 +127,7 @@ async function saveResultsToDB(asin: string, crawlResults: CrawlResultItem[]) {
   let product = await db.product.findUnique({ where: { asin: cleanAsin } })
 
   const bestResult = crawlResults.find(
-    (r) =>
-      r.name &&
-      r.name !== `Product ${cleanAsin}` &&
+    (r) => r.name && r.name !== `Product ${cleanAsin}` &&
       !r.name.toLowerCase().includes('no other sellers') &&
       !r.name.toLowerCase().includes('no featured')
   ) || crawlResults.find((r) => r.name && r.name !== `Product ${cleanAsin}`) || crawlResults[0]
