@@ -118,6 +118,11 @@ export default function Home() {
   const [expandedDebugId, setExpandedDebugId] = useState<string | null>(null)
   const [debugFilter, setDebugFilter] = useState<'all' | 'error' | 'success' | 'na'>('all')
 
+  // API test state
+  const [apiTestRunning, setApiTestRunning] = useState(false)
+  const [apiTestResults, setApiTestResults] = useState<Array<{ step: string; status: string; details: string; timingMs: number }>>([])
+  const [showApiTest, setShowApiTest] = useState(false)
+
   const { toast } = useToast()
 
   // Default Crawleo API key from env
@@ -214,6 +219,34 @@ export default function Home() {
       setDebugLoading(false)
     }
   }, [])
+
+  // Test Crawleo API key
+  const handleTestApiKey = async () => {
+    if (!crawleoApiKey) {
+      toast({ title: 'No API Key', description: 'Enter your Crawleo API key first', variant: 'destructive' })
+      return
+    }
+    setApiTestRunning(true)
+    setApiTestResults([])
+    setShowApiTest(true)
+    try {
+      const res = await fetch(`/api/test-crawleo?apiKey=${encodeURIComponent(crawleoApiKey)}`)
+      const data = await res.json()
+      if (data.results) {
+        setApiTestResults(data.results)
+        const successCount = data.results.filter((r: any) => r.status === 'success').length
+        toast({
+          title: successCount >= 2 ? 'API Key Works!' : 'API Key Issues Detected',
+          description: `${successCount}/${data.results.length} tests passed`,
+          variant: successCount >= 2 ? 'default' : 'destructive',
+        })
+      }
+    } catch (e) {
+      setApiTestResults([{ step: 'Error', status: 'error', details: `Failed to run test: ${e instanceof Error ? e.message : String(e)}`, timingMs: 0 }])
+    } finally {
+      setApiTestRunning(false)
+    }
+  }
 
   // ── Timestamp helper ──
   const ts = () =>
@@ -1559,6 +1592,16 @@ export default function Home() {
           <Button
             variant="outline"
             size="sm"
+            className={`bg-transparent border-orange-500/50 text-orange-400 hover:bg-orange-500/10 text-[10px] h-6 ${apiTestRunning ? 'opacity-50' : ''}`}
+            onClick={handleTestApiKey}
+            disabled={apiTestRunning}
+          >
+            {apiTestRunning ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Zap className="w-3 h-3 mr-1" />}
+            TEST API
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             className="bg-transparent border-[#2a2a2a] text-gray-400 hover:text-gray-200 hover:border-[#3a3a3a] text-[10px] h-6"
             onClick={fetchDebugLogs}
             disabled={debugLoading}
@@ -1582,6 +1625,57 @@ export default function Home() {
         </div>
       </div>
     </section>
+
+    {/* ── API TEST RESULTS ── */}
+    {showApiTest && apiTestResults.length > 0 && (
+      <section className="bg-[#111111] rounded-lg border border-[#1a1a1a] overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[#1a1a1a]">
+          <div className="flex items-center gap-2">
+            <Server className="w-4 h-4 text-orange-400" />
+            <h2 className="text-xs font-bold tracking-wider">CRAWLEO API TEST</h2>
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+              apiTestResults.every(r => r.status === 'success') ? 'bg-green-500/10 text-green-400' :
+              apiTestResults.some(r => r.status === 'success') ? 'bg-yellow-500/10 text-yellow-400' :
+              'bg-red-500/10 text-red-400'
+            }`}>
+              {apiTestResults.filter(r => r.status === 'success').length}/{apiTestResults.length} PASSED
+            </span>
+          </div>
+          <button
+            onClick={() => setShowApiTest(false)}
+            className="text-gray-500 hover:text-gray-300 text-[10px]"
+          >
+            ✕ CLOSE
+          </button>
+        </div>
+        <div className="p-3 space-y-2">
+          {apiTestResults.map((r, i) => (
+            <div key={i} className={`flex items-start gap-3 px-3 py-2 rounded border ${
+              r.status === 'success' ? 'bg-green-500/5 border-green-500/20' :
+              r.status === 'error' ? 'bg-red-500/5 border-red-500/20' :
+              'bg-[#1a1a1a] border-[#2a2a2a]'
+            }`}>
+              <span className={`shrink-0 mt-0.5 ${
+                r.status === 'success' ? 'text-green-400' :
+                r.status === 'error' ? 'text-red-400' :
+                'text-yellow-400'
+              }`}>
+                {r.status === 'success' ? '✓' : r.status === 'error' ? '✗' : '⏳'}
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold text-gray-300">{r.step}</span>
+                  {r.timingMs > 0 && (
+                    <span className="text-[9px] text-gray-600">{(r.timingMs / 1000).toFixed(1)}s</span>
+                  )}
+                </div>
+                <p className="text-[10px] text-gray-400 mt-0.5 break-all">{r.details}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    )}
 
     {/* ── LOG ENTRIES ── */}
     {debugLoading && debugLogs.length === 0 ? (

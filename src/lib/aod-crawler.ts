@@ -178,6 +178,18 @@ async function fetchWithCrawleo(
         const body = await response.text().catch(() => '')
         lastErrorMsg = `Crawleo API HTTP ${response.status}: ${body.slice(0, 500)}`
         console.error(`[Crawleo] HTTP ${response.status} (attempt ${attempt + 1}/${maxRetries + 1}): ${body.slice(0, 300)}`)
+
+        // Special handling for "sandbox is inactive" — retry with longer delay
+        if (body.includes('sandbox is inactive')) {
+          const sandboxDelay = 5000 * (attempt + 1) // 5s, 10s, 15s
+          console.log(`[Crawleo] Sandbox inactive detected, waiting ${sandboxDelay}ms before retry...`)
+          if (attempt < maxRetries) {
+            await new Promise((r) => setTimeout(r, sandboxDelay))
+            continue
+          }
+          lastErrorMsg = `Crawleo API "sandbox is inactive" — This usually means: (1) Your API plan's sandbox/free tier has expired or been paused, (2) Rate limit hit, or (3) Temporary Crawleo infrastructure issue. Try again in a few minutes or check your Crawleo dashboard.`
+        }
+
         if (attempt < maxRetries) continue
         // Return partial result with debug info even on failure
         return {
@@ -188,6 +200,30 @@ async function fetchWithCrawleo(
 
       const data = await response.json()
       lastCredits = data.credits ?? 0
+
+      // Handle JSON-level errors (e.g. {"error":"sandbox is inactive"} returned with HTTP 200)
+      if (data.error) {
+        const errMsg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error)
+        lastErrorMsg = `Crawleo API error: ${errMsg}`
+
+        if (errMsg.includes('sandbox is inactive')) {
+          const sandboxDelay = 5000 * (attempt + 1)
+          console.log(`[Crawleo] Sandbox inactive (JSON) detected, waiting ${sandboxDelay}ms before retry...`)
+          if (attempt < maxRetries) {
+            await new Promise((r) => setTimeout(r, sandboxDelay))
+            continue
+          }
+          lastErrorMsg = `Crawleo "sandbox is inactive" — Your API plan's sandbox may be expired/paused, or rate limited. Check your Crawleo dashboard or try again later.`
+        } else if (attempt < maxRetries) {
+          await new Promise((r) => setTimeout(r, 2000 * attempt))
+          continue
+        }
+
+        return {
+          raw_html: '', enhanced_html: '', markdown: '',
+          debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: 0, credits: lastCredits, errorMsg: lastErrorMsg, retryCount: attempt }
+        }
+      }
 
       if (!data.results || data.results.length === 0) {
         lastErrorMsg = 'Crawleo returned no results'
