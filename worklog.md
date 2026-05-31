@@ -1,29 +1,32 @@
 ---
 Task ID: 1
 Agent: Main Agent
-Task: Convert Python scraper to JavaScript/TypeScript for Vercel/GitHub/Supabase compatibility
+Task: Integrate Supabase, migrate from Prisma/SQLite, prepare for GitHub/Vercel deployment
 
 Work Log:
-- Reviewed entire project: page.tsx, aod-crawler.ts, crawl route.ts, scrape.py, products route.ts, export route.ts, prisma schema
-- Found that src/lib/aod-crawler.ts already had a complete TypeScript implementation of the Crawleo API crawler
-- The crawl API route (src/app/api/crawl/route.ts) was still using Python subprocess (execFile) which won't work on Vercel
-- Updated crawl API route to use the TypeScript crawlRegion() function directly instead of Python subprocess
-- Updated frontend comment to reflect TypeScript instead of Python
-- Tested the TypeScript crawler with multiple regions:
-  - DE: €10.63 (B0DJSW6BDG) - correctly parsed "10,63 € mit 24 Prozent Einsparungen"
-  - SA: SAR 113.38 (B0DJSW6BDG) - correctly parsed Arabic "ريال" currency
-  - EG: N/A (B0DJSW6BDG) - correctly identified no offers on amazon.eg
-  - COM: N/A (B08LKLQP2N) - correctly identified "No featured offers available"
-- Updated Prisma schema with Supabase deployment instructions
-- Updated .env with clear documentation for both SQLite (dev) and PostgreSQL (Supabase)
-- Added vercel.json for deployment configuration (60s max duration for crawl API)
-- Updated package.json build scripts to include prisma generate and vercel-build
-- Verified lint passes (no errors in src/ directory)
+- Installed @supabase/supabase-js and @supabase/ssr packages
+- Created .env.local with Supabase URL and publishable key
+- Created Supabase client utilities (server.ts, client.ts, middleware.ts)
+- Created db-supabase.ts with full database operations (getAllProducts, findProductByAsin, createProduct, updateProduct, upsertPrice, deleteProducts, deleteAllProducts)
+- Updated all API routes to use Supabase instead of Prisma:
+  - /api/crawl - uses Supabase for saving crawl results
+  - /api/products - uses Supabase for listing/deleting products
+  - /api/export - uses Supabase for exporting data
+  - /api/crawl-save - uses Supabase for saving crawl results
+  - /api/setup - new route that provides SQL migration
+- Added database setup banner in page.tsx when tables don't exist yet
+- Created supabase-migration.sql with complete schema (products, prices, RLS policies, triggers)
+- Updated .gitignore to exclude mini-services, prisma, db, and worklog.md
+- Created .env.example for public repo
+- Removed .env from git tracking
 - Verified production build succeeds
+- Verified lint passes
 
 Stage Summary:
-- Python dependency completely removed - project is now pure JavaScript/TypeScript
-- Crawleo API integration works directly from TypeScript (no subprocess needed)
-- Project is fully compatible with GitHub, Vercel, and Supabase deployment
-- For Supabase: change Prisma provider from "sqlite" to "postgresql" and set DATABASE_URL
-- Price parsing verified for EUR, SAR, EGP, USD currencies including Arabic text
+- Project fully migrated from Prisma/SQLite to Supabase
+- Python dependency completely removed - pure TypeScript/JavaScript
+- App handles missing database tables gracefully with setup instructions
+- SQL migration file provided at supabase-migration.sql
+- User needs to run the SQL migration in Supabase Dashboard SQL Editor
+- User needs to push to GitHub manually (no GitHub credentials available)
+- Build verified: all routes compile correctly
