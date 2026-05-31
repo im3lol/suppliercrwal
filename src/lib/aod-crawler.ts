@@ -1,17 +1,18 @@
 /**
- * Amazon AOD Price Crawler — Direct Crawleo API (TypeScript)
+ * Amazon Offer Listing Price Crawler — Direct Crawleo API (TypeScript)
  *
- * ALL prices come from AOD (All Offers Display) ONLY.
+ * ALL prices come from the Offer Listing page (All Offers Display) ONLY.
  * Calls Crawleo API (https://api.crawleo.dev/crawl) directly from TypeScript
- * to fetch AOD AJAX pages with JavaScript rendering and correct geolocation.
+ * to fetch offer listing pages with JavaScript rendering and correct geolocation.
  *
  * CRITICAL RULES:
- * - Prices MUST come from AOD AJAX endpoint ONLY
- * - URL pattern: https://www.amazon.{region}/gp/product/ajax/aodAjaxMain/?asin={ASIN}
+ * - Prices MUST come from Offer Listing / AOD page ONLY
+ * - URL pattern: https://www.amazon.{region}/gp/offer-listing/{ASIN}
+ * - The offer-listing page shows all seller offers (same as AOD overlay)
  * - NO fallback to main page prices
  * - NO ATC button prices from non-AOD sections
  * - NO alternative/recommended product prices
- * - If AOD has no offers → return "N/A"
+ * - If no offers → return "N/A"
  */
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -25,6 +26,7 @@ export interface RegionConfig {
   currencyCookie: string
   geo: string
   postalCode?: string
+  offerListingPath: string
 }
 
 export const REGIONS: Record<string, RegionConfig> = {
@@ -35,6 +37,7 @@ export const REGIONS: Record<string, RegionConfig> = {
     currencyCookie: 'USD',
     geo: 'us',
     postalCode: '99950',
+    offerListingPath: '/gp/offer-listing/',
   },
   EG: {
     domain: 'amazon.eg',
@@ -42,6 +45,7 @@ export const REGIONS: Record<string, RegionConfig> = {
     currency: 'EGP',
     currencyCookie: 'EGP',
     geo: 'eg',
+    offerListingPath: '/-/en/gp/offer-listing/',
   },
   DE: {
     domain: 'amazon.de',
@@ -50,6 +54,7 @@ export const REGIONS: Record<string, RegionConfig> = {
     currencyCookie: 'EUR',
     geo: 'de',
     postalCode: '80331',
+    offerListingPath: '/gp/offer-listing/',
   },
   SA: {
     domain: 'amazon.sa',
@@ -57,6 +62,7 @@ export const REGIONS: Record<string, RegionConfig> = {
     currency: 'SAR',
     currencyCookie: 'SAR',
     geo: 'sa',
+    offerListingPath: '/-/en/gp/offer-listing/',
   },
   AE: {
     domain: 'amazon.ae',
@@ -64,6 +70,7 @@ export const REGIONS: Record<string, RegionConfig> = {
     currency: 'AED',
     currencyCookie: 'AED',
     geo: 'ae',
+    offerListingPath: '/-/en/gp/offer-listing/',
   },
 }
 
@@ -544,6 +551,7 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
   }
 
   // ── Check for truly no offers ──
+  // On offer-listing pages, check for AOD-style offer count AND general no-offer indicators
   const offerCountMatch =
     htmlClean.match(/id="aod-total-offer-count"[^>]*value="(\d+)"/) ??
     htmlClean.match(/value="(\d+)"[^>]*id="aod-total-offer-count"/)
@@ -553,11 +561,35 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
 
   const priceElements = htmlClean.match(/id="aod-price-\d+"/g) ?? []
   const hasPriceElements = priceElements.length > 0
-  console.log(`[Parse] aod-price-* elements found: ${priceElements.length} (${priceElements.slice(0, 5).join(', ')})`)
+  console.log(`[Parse] aod-price-* elements found: ${priceElements.length}`)
 
-  // Only return N/A if BOTH: no other sellers (offer count = 0) AND no price elements at all
-  if (totalOffers === 0 && !hasPriceElements) {
-    console.log(`[Parse] No offers at all (offer-count=0, no aod-price elements) → N/A`)
+  // Also check for a-price elements (used on offer-listing pages)
+  const aPriceElements = htmlClean.match(/class="[^"]*a-price[^"]*"/g) ?? []
+  const hasAPriceElements = aPriceElements.length > 0
+  console.log(`[Parse] a-price elements found: ${aPriceElements.length}`)
+
+  // Check for no-offer phrases
+  const lowerHtml = htmlClean.toLowerCase()
+  const lowerMd = mdClean.toLowerCase()
+  const noOfferPhrases = [
+    'no featured offers available',
+    'no featured offers',
+    'currently unavailable',
+    'no offers available',
+    'no sellers',
+    'لا يوجد بائعون',
+    'لا يتوفر',
+  ]
+  const hasNoOfferPhrase = noOfferPhrases.some(p => lowerHtml.includes(p) || lowerMd.includes(p))
+
+  // Only return N/A if confirmed no offers
+  if (totalOffers === 0 && !hasPriceElements && !hasAPriceElements) {
+    console.log(`[Parse] No offers at all (offer-count=0, no price elements) → N/A`)
+    return { price: 'N/A', currency: defaultCurrency, name, image }
+  }
+
+  if (hasNoOfferPhrase && !hasAPriceElements && !hasPriceElements) {
+    console.log(`[Parse] No offers detected (no-offer phrases, no price elements) → N/A`)
     return { price: 'N/A', currency: defaultCurrency, name, image }
   }
 
@@ -580,14 +612,15 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
   const priceBlock = priceBlockRegex.exec(htmlClean)
   if (priceBlock) {
     const symbol = priceBlock[1].trim()
-    const whole = priceBlock[2].trim().replace(/[,.]$/, '')
+    // Strip any inner HTML tags from the "whole" part (e.g. <span class="a-price-decimal">.</span>)
+    const wholeRaw = priceBlock[2].trim().replace(/<[^>]+>/g, '').replace(/[,.]$/, '')
     const fraction = priceBlock[3].trim()
-    const wholeClean = cleanWhole(whole)
+    const wholeClean = cleanWhole(wholeRaw)
     try {
       const priceVal = parseFloat(`${wholeClean}.${fraction}`)
       if (priceVal > 0) {
         const currency = identifyCurrency(symbol, defaultCurrency)
-        console.log(`[Parse] Price from a-price components: ${symbol}${whole}.${fraction} -> ${wholeClean}.${fraction} ${currency}`)
+        console.log(`[Parse] Price from a-price components: ${symbol}${wholeRaw}.${fraction} -> ${wholeClean}.${fraction} ${currency}`)
         return { price: `${wholeClean}.${fraction}`, currency, name, image }
       }
     } catch {
@@ -622,15 +655,11 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
   }
 
   // ── Fallback: check for no-offer phrases if we couldn't find a price ──
-  if (totalOffers === -1 && !hasPriceElements) {
-    const lowerHtml = htmlClean.toLowerCase()
-    const lowerMd = mdClean.toLowerCase()
-    const hasNoFeatured = ['no featured offers available', 'no featured offers', 'currently unavailable']
-      .some(p => lowerHtml.includes(p) || lowerMd.includes(p))
+  if (!hasAPriceElements && !hasPriceElements) {
     const noOtherSellers = lowerHtml.includes('no other sellers') || lowerMd.includes('no other sellers')
     const noSellersAr = lowerHtml.includes('\u0644\u0627 \u064a\u0648\u062c\u062f \u0628\u0627\u0626\u0639\u0648\u0646 \u0622\u062e\u0631\u0648\u0646') || lowerHtml.includes('\u0644\u0627 \u064a\u0648\u062c\u062f \u062d\u0627\u0644\u064a\u0627\u064b \u0628\u0627\u0626\u0639\u0648\u0646')
 
-    if (hasNoFeatured && (noOtherSellers || noSellersAr)) {
+    if (hasNoOfferPhrase && (noOtherSellers || noSellersAr || totalOffers === -1)) {
       console.log(`[Parse] No offers detected (no featured + no other sellers) → N/A`)
       return { price: 'N/A', currency: defaultCurrency, name, image }
     }
@@ -691,14 +720,17 @@ export async function crawlRegion(
   try {
     console.log(`[crawlRegion] Crawling ${asin} on ${region.domain} via Crawleo...`)
 
-    // Build AOD AJAX URL — this is the ONLY source for prices
-    const url = `https://www.${region.domain}/gp/product/ajax/aodAjaxMain/?asin=${asin}`
+    // Build offer-listing URL — this shows all seller offers (same as AOD)
+    // The AOD AJAX endpoint returns 404 via Crawleo, so we use /gp/offer-listing/ instead
+    // which contains the same data in a standalone page
+    const offerPath = region.offerListingPath || '/gp/offer-listing/'
+    const url = `https://www.${region.domain}${offerPath}${asin}`
 
     // Fetch via Crawleo API with JavaScript rendering and geolocation
     const crawleoResult = await fetchWithCrawleo(url, crawleoApiKey, region.geo)
 
     if (!crawleoResult) {
-      return { ...na, error: 'Failed to fetch AOD page from Crawleo' }
+      return { ...na, error: 'Failed to fetch offer listing page from Crawleo' }
     }
 
     // Parse the Crawleo response — prefer raw_html for accurate price extraction
