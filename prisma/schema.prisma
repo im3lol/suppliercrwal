@@ -7,6 +7,18 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FOR SUPABASE / VERCEL DEPLOYMENT:
+//
+// 1. Change provider from "sqlite" to "postgresql"
+// 2. Set DATABASE_URL to your Supabase connection string:
+//    DATABASE_URL="postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres"
+// 3. Run: npx prisma db push
+//
+// FOR LOCAL DEVELOPMENT (SQLite):
+//   DATABASE_URL="file:./db/custom.db"
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 model Product {
   id        String   @id @default(cuid())
   asin      String   @unique

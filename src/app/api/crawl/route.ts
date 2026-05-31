@@ -1,22 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { execFile } from 'child_process'
-import path from 'path'
+import { crawlRegion } from '@/lib/aod-crawler'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// AOD CRAWLER API
+// AOD CRAWLER API — Pure TypeScript (no Python subprocess)
 //
-// Crawl ASIN on a single region via Python subprocess (scrape.py).
-// The Python script calls the Crawleo API and parses AOD HTML.
+// Crawl ASIN on a single region via Crawleo API directly.
+// Uses aod-crawler.ts which calls Crawleo API and parses AOD HTML.
 //
 // CRITICAL RULES:
 // - Prices come from AOD ONLY (All Offers Display)
 // - If AOD has no offers → return N/A
+//
+// This route is fully compatible with Vercel/GitHub/Supabase deployment.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export const maxDuration = 60
-
-const SCRAPE_SCRIPT = path.join(process.cwd(), 'mini-services', 'scrapling-service', 'scrape.py')
 
 interface CrawlResultItem {
   domain: string
@@ -47,63 +46,10 @@ export async function POST(request: NextRequest) {
 
     const regionKey = (region || 'COM').trim().toUpperCase()
 
-    console.log(`[Crawl API] Crawling ${cleanAsin} on ${regionKey}...`)
+    console.log(`[Crawl API] Crawling ${cleanAsin} on ${regionKey} via Crawleo (TypeScript)...`)
 
-    // Call Python script via subprocess
-    const result = await new Promise<CrawlResultItem>((resolve) => {
-      execFile(
-        'python3',
-        [SCRAPE_SCRIPT, cleanAsin, regionKey, crawleoApiKey],
-        { timeout: 60000, maxBuffer: 5 * 1024 * 1024 },
-        (error, stdout, stderr) => {
-          if (error) {
-            console.error(`[Crawl] Error: ${error.message}`)
-            if (stderr) console.error(`[Crawl] stderr: ${stderr.slice(0, 300)}`)
-            resolve({
-              domain: '', region: regionKey, name: `Product ${cleanAsin}`,
-              image: '', price: 'N/A', currency: '', priceDisplay: 'N/A',
-              asin: cleanAsin, error: `Crawler error: ${error.message}`,
-            })
-            return
-          }
-
-          try {
-            // Find JSON line in output
-            const lines = stdout.trim().split('\n')
-            let jsonLine = ''
-            for (const line of lines) {
-              if (line.trim().startsWith('{')) {
-                jsonLine = line.trim()
-                break
-              }
-            }
-            if (!jsonLine) jsonLine = lines[lines.length - 1]
-
-            const data = JSON.parse(jsonLine)
-
-            resolve({
-              domain: data.domain || '',
-              region: data.region || regionKey,
-              name: data.name || `Product ${cleanAsin}`,
-              image: data.image || '',
-              price: data.price || 'N/A',
-              currency: data.currency || '',
-              priceDisplay: data.priceDisplay || 'N/A',
-              asin: cleanAsin,
-              error: data.error || undefined,
-            })
-          } catch (parseError) {
-            console.error(`[Crawl] Parse error: ${parseError}`)
-            console.error(`[Crawl] stdout: ${stdout.slice(0, 300)}`)
-            resolve({
-              domain: '', region: regionKey, name: `Product ${cleanAsin}`,
-              image: '', price: 'N/A', currency: '', priceDisplay: 'N/A',
-              asin: cleanAsin, error: `Parse error: ${String(parseError)}`,
-            })
-          }
-        }
-      )
-    })
+    // Call TypeScript crawler directly — no Python subprocess needed!
+    const result: CrawlResultItem = await crawlRegion(cleanAsin, regionKey, crawleoApiKey)
 
     // Save to DB
     await saveResultsToDB(cleanAsin, [result])

@@ -242,7 +242,7 @@ export default function Home() {
         )
 
         try {
-          // Call the Next.js API which runs Python script via subprocess
+          // Call the Next.js API which crawls via Crawleo directly (TypeScript)
           const res = await fetch('/api/crawl', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

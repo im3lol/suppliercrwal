@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "src/app/api/crawl/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}
