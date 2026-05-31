@@ -1,20 +1,16 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  Zap, Search, Download, Upload, Trash2, RefreshCw,
+  Zap, Search, Download, Trash2, RefreshCw,
   Globe, Clock, Activity, Database, Server, ChevronRight,
-  Terminal, Loader2, CheckCircle2, XCircle, AlertTriangle,
-  LayoutDashboard, History, Settings, Shield, ArrowUpDown,
-  Package, MapPin
+  Loader2, CheckCircle2, XCircle, AlertTriangle,
+  LayoutDashboard, History, Settings, Shield,
+  Package, MapPin, FileText, StopCircle
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Badge } from '@/components/ui/badge'
-import { Separator } from '@/components/ui/separator'
 import { useToast } from '@/hooks/use-toast'
-import Image from 'next/image'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // TYPES
@@ -39,6 +35,14 @@ interface Product {
 
 type ViewMode = 'live' | 'history'
 
+interface LogEntry {
+  time: string
+  asin: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  message: string
+  pricesFound: number
+}
+
 const REGIONS = [
   { key: 'EG', label: 'Egypt', flag: '🇪🇬', short: 'EG' },
   { key: 'COM', label: 'USA', flag: '🇺🇸', short: 'COM' },
@@ -56,11 +60,15 @@ export default function Home() {
   const [products, setProducts] = useState<Product[]>([])
   const [asinInput, setAsinInput] = useState('')
   const [isCrawling, setIsCrawling] = useState(false)
-  const [crawlProgress, setCrawlProgress] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [isLoading, setIsLoading] = useState(false)
   const [currentTime, setCurrentTime] = useState('')
   const [totalScans, setTotalScans] = useState(0)
+  const [crawlLog, setCrawlLog] = useState<LogEntry[]>([])
+  const [crawlCurrent, setCrawlCurrent] = useState(0)
+  const [crawlTotal, setCrawlTotal] = useState(0)
+  const abortRef = useRef(false)
+  const logEndRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
 
   // Update clock
@@ -80,6 +88,11 @@ export default function Home() {
     const interval = setInterval(update, 1000)
     return () => clearInterval(interval)
   }, [])
+
+  // Auto-scroll log
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [crawlLog])
 
   // Fetch products
   const fetchProducts = useCallback(async () => {
@@ -102,54 +115,150 @@ export default function Home() {
     fetchProducts()
   }, [fetchProducts])
 
-  // ── Crawl Handler ──
-  const handleCrawl = async () => {
-    const asins = asinInput
-      .split(/[\n,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean)
+  // ── Timestamp helper ──
+  const ts = () =>
+    new Date().toLocaleTimeString('en-US', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
 
-    if (asins.length === 0) {
-      toast({ title: 'No ASIN entered', description: 'Enter one or more ASINs to crawl', variant: 'destructive' })
+  // ── Bulk Crawl Handler (FOR LOOP — sequential per ASIN) ──
+  const handleBulkCrawl = async () => {
+    const asins = asinInput
+      .split(/[\n,;\s]+/)
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => /^[A-Z0-9]{10}$/.test(s))
+
+    // Deduplicate
+    const uniqueAsins = [...new Set(asins)]
+
+    if (uniqueAsins.length === 0) {
+      toast({
+        title: 'No valid ASINs',
+        description: 'Enter ASINs (10 alphanumeric chars), one per line or comma-separated',
+        variant: 'destructive',
+      })
       return
     }
 
     setIsCrawling(true)
-    setCrawlProgress('Initializing crawl...')
+    abortRef.current = false
+    setCrawlTotal(uniqueAsins.length)
+    setCrawlCurrent(0)
+    setCrawlLog([])
 
-    try {
-      setCrawlProgress(`Scanning ${asins.length} ASIN(s) across 5 regions...`)
-      const res = await fetch('/api/crawl', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ asins }),
-      })
+    // Initial log entries
+    const initLogs: LogEntry[] = uniqueAsins.map((asin) => ({
+      time: ts(),
+      asin,
+      status: 'pending',
+      message: 'Queued',
+      pricesFound: 0,
+    }))
+    setCrawlLog(initLogs)
 
-      const data = await res.json()
+    let totalPricesFound = 0
 
-      if (data.success) {
-        const totalPrices = data.data.reduce(
-          (acc: number, r: { results: { price: string }[] }) =>
-            acc + r.results.filter((rr: { price: string }) => rr.price !== 'N/A').length,
-          0
+    // ━━━ FOR LOOP — process each ASIN sequentially ━━━
+    for (let i = 0; i < uniqueAsins.length; i++) {
+      // Check abort
+      if (abortRef.current) {
+        setCrawlLog((prev) =>
+          prev.map((entry, idx) =>
+            idx >= i && entry.status === 'pending'
+              ? { ...entry, status: 'error', message: 'Aborted', time: ts() }
+              : entry
+          )
         )
-        setCrawlProgress(`Scan complete — ${totalPrices} prices found`)
-        toast({
-          title: 'Scan Complete',
-          description: `Found ${totalPrices} prices across ${asins.length} product(s)`,
-        })
-        setAsinInput('')
-        fetchProducts()
-      } else {
-        setCrawlProgress('Scan failed')
-        toast({ title: 'Scan Failed', description: data.error, variant: 'destructive' })
+        break
       }
-    } catch (e) {
-      setCrawlProgress('Scan failed — network error')
-      toast({ title: 'Network Error', description: String(e), variant: 'destructive' })
-    } finally {
-      setIsCrawling(false)
+
+      const asin = uniqueAsins[i]
+      setCrawlCurrent(i + 1)
+
+      // Mark as running
+      setCrawlLog((prev) =>
+        prev.map((entry, idx) =>
+          idx === i ? { ...entry, status: 'running', message: 'Scanning 5 regions...', time: ts() } : entry
+        )
+      )
+
+      try {
+        const res = await fetch('/api/crawl', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ asins: [asin] }),
+        })
+
+        const data = await res.json()
+
+        if (data.success && data.data && data.data.length > 0) {
+          const result = data.data[0]
+          const pricesFound = result.results
+            ? result.results.filter((r: { price: string }) => r.price !== 'N/A').length
+            : 0
+          totalPricesFound += pricesFound
+
+          setCrawlLog((prev) =>
+            prev.map((entry, idx) =>
+              idx === i
+                ? {
+                    ...entry,
+                    status: 'done',
+                    message: `${pricesFound}/5 prices found`,
+                    pricesFound,
+                    time: ts(),
+                  }
+                : entry
+            )
+          )
+        } else {
+          setCrawlLog((prev) =>
+            prev.map((entry, idx) =>
+              idx === i
+                ? { ...entry, status: 'error', message: data.error || 'Failed', time: ts() }
+                : entry
+            )
+          )
+        }
+      } catch (e) {
+        setCrawlLog((prev) =>
+          prev.map((entry, idx) =>
+            idx === i ? { ...entry, status: 'error', message: 'Network error', time: ts() } : entry
+          )
+        )
+      }
+
+      // Refresh products after each ASIN
+      await fetchProducts()
+
+      // Small delay between ASINs to avoid rate limiting (except for last one)
+      if (i < uniqueAsins.length - 1 && !abortRef.current) {
+        await new Promise((r) => setTimeout(r, 1500))
+      }
     }
+    // ━━━ END FOR LOOP ━━━
+
+    setIsCrawling(false)
+    setAsinInput('')
+
+    const completed = uniqueAsins.filter((_, i) => {
+      const log = crawlLog[i]
+      return log?.status === 'done'
+    }).length
+
+    toast({
+      title: 'Bulk Scan Complete',
+      description: `${completed}/${uniqueAsins.length} ASINs scanned — ${totalPricesFound} total prices found`,
+    })
+  }
+
+  // ── Stop Crawl ──
+  const handleStopCrawl = () => {
+    abortRef.current = true
+    toast({ title: 'Stopping...', description: 'Will stop after current ASIN finishes' })
   }
 
   // ── Delete Handler ──
@@ -199,6 +308,10 @@ export default function Home() {
     (acc, p) => acc + Object.values(p.prices).filter((pr) => pr.price !== 'N/A').length,
     0
   )
+
+  const doneCount = crawlLog.filter((l) => l.status === 'done').length
+  const errorCount = crawlLog.filter((l) => l.status === 'error').length
+  const runningCount = crawlLog.filter((l) => l.status === 'running').length
 
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   // RENDER
@@ -356,65 +469,176 @@ export default function Home() {
 
         {/* ── CONTENT ── */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* ── CRAWL COMMAND ── */}
+          {/* ── CRAWL COMMAND (BULK) ── */}
           <section className="bg-[#111111] rounded-lg border border-[#1a1a1a] overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 border-b border-[#1a1a1a]">
               <div className="flex items-center gap-2">
                 <Zap className="w-4 h-4 text-orange-400" />
-                <h2 className="text-xs font-bold tracking-wider">CRAWL COMMAND (BULK)</h2>
+                <h2 className="text-xs font-bold tracking-wider">BULK CRAWL COMMAND</h2>
+                {isCrawling && crawlTotal > 0 && (
+                  <span className="text-[10px] text-yellow-400 ml-2">
+                    [{crawlCurrent}/{crawlTotal}]
+                  </span>
+                )}
               </div>
-              {crawlProgress && (
-                <div className="flex items-center gap-1.5 text-[10px]">
-                  {isCrawling ? (
-                    <Loader2 className="w-3 h-3 text-yellow-400 animate-spin" />
-                  ) : crawlProgress.includes('complete') ? (
-                    <CheckCircle2 className="w-3 h-3 text-green-400" />
-                  ) : crawlProgress.includes('failed') ? (
-                    <XCircle className="w-3 h-3 text-red-400" />
-                  ) : null}
-                  <span
-                    className={
-                      isCrawling
-                        ? 'text-yellow-400'
-                        : crawlProgress.includes('complete')
-                          ? 'text-green-400'
-                          : crawlProgress.includes('failed')
-                            ? 'text-red-400'
-                            : 'text-gray-400'
-                    }
-                  >
-                    {crawlProgress.toUpperCase()}
+              {isCrawling && (
+                <div className="flex items-center gap-3">
+                  {/* Progress bar */}
+                  <div className="w-32 h-1.5 bg-[#1a1a1a] rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-orange-500 rounded-full transition-all duration-300"
+                      style={{ width: `${crawlTotal > 0 ? (crawlCurrent / crawlTotal) * 100 : 0}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] text-yellow-400">
+                    {crawlTotal > 0 ? Math.round((crawlCurrent / crawlTotal) * 100) : 0}%
                   </span>
                 </div>
               )}
             </div>
-            <div className="p-4 flex items-center gap-3">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-600" />
-                <Input
+
+            <div className="p-4 space-y-3">
+              {/* Textarea for bulk ASINs */}
+              <div className="relative">
+                <div className="absolute left-3 top-3 text-gray-600">
+                  <FileText className="w-3.5 h-3.5" />
+                </div>
+                <textarea
                   value={asinInput}
                   onChange={(e) => setAsinInput(e.target.value)}
-                  placeholder="B08LKLQP2N (comma or newline separated)"
-                  className="bg-[#0a0a0a] border-[#2a2a2a] text-gray-200 placeholder-gray-600 text-xs h-9 pl-9 font-mono focus:border-orange-500/50 focus:ring-orange-500/20"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) handleCrawl()
-                  }}
+                  placeholder={`Enter ASINs — one per line, comma-separated, or space-separated\n\nExample:\nB08LKLQP2N\nB09V3KXJPB, B0BR4FQRT4\nB0D9LNJGSM B0CKBQRLDF`}
+                  className="w-full bg-[#0a0a0a] border border-[#2a2a2a] text-gray-200 placeholder-gray-600 text-xs font-mono pl-9 pr-3 py-3 rounded-md focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 focus:outline-none resize-none h-28"
+                  disabled={isCrawling}
                 />
+                <div className="absolute right-3 bottom-3 text-[10px] text-gray-600">
+                  {asinInput
+                    .split(/[\n,;\s]+/)
+                    .filter((s) => /^[A-Z0-9]{10}$/i.test(s.trim())).length}{' '}
+                  valid ASINs
+                </div>
               </div>
-              <Button
-                onClick={handleCrawl}
-                disabled={isCrawling}
-                className="bg-orange-500 hover:bg-orange-600 text-black font-bold text-xs h-9 px-5 shrink-0"
-              >
-                {isCrawling ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
-                ) : (
-                  <Zap className="w-3.5 h-3.5 mr-1.5" />
+
+              {/* Action buttons */}
+              <div className="flex items-center gap-3">
+                <Button
+                  onClick={handleBulkCrawl}
+                  disabled={isCrawling || !asinInput.trim()}
+                  className="bg-orange-500 hover:bg-orange-600 text-black font-bold text-xs h-9 px-5 shrink-0"
+                >
+                  {isCrawling ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
+                  ) : (
+                    <Zap className="w-3.5 h-3.5 mr-1.5" />
+                  )}
+                  {isCrawling ? `SCANNING ${crawlCurrent}/${crawlTotal}...` : 'EXECUTE BULK SCAN'}
+                </Button>
+                {isCrawling && (
+                  <Button
+                    onClick={handleStopCrawl}
+                    variant="outline"
+                    className="bg-transparent border-red-500/50 text-red-400 hover:bg-red-500/10 text-xs h-9"
+                  >
+                    <StopCircle className="w-3.5 h-3.5 mr-1.5" />
+                    STOP
+                  </Button>
                 )}
-                EXECUTE BULK SCAN
-              </Button>
+                <div className="text-[10px] text-gray-600 ml-2">
+                  Sequential for-loop • 1.5s delay between ASINs • 5 regions per ASIN
+                </div>
+              </div>
             </div>
           </section>
+
+          {/* ── CRAWL LOG (visible during/after crawl) ── */}
+          {crawlLog.length > 0 && (
+            <section className="bg-[#111111] rounded-lg border border-[#1a1a1a] overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-[#1a1a1a]">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-orange-400" />
+                  <h2 className="text-xs font-bold tracking-wider">CRAWL LOG</h2>
+                  {isCrawling && runningCount > 0 && (
+                    <span className="flex items-center gap-1 text-[10px] text-yellow-400">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Running
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 text-[10px]">
+                  <span className="text-green-400">
+                    <CheckCircle2 className="w-3 h-3 inline mr-0.5" />
+                    {doneCount}
+                  </span>
+                  <span className="text-red-400">
+                    <XCircle className="w-3 h-3 inline mr-0.5" />
+                    {errorCount}
+                  </span>
+                  <span className="text-gray-500">
+                    Total: {crawlLog.length}
+                  </span>
+                </div>
+              </div>
+              <div className="max-h-48 overflow-y-auto">
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="border-b border-[#1a1a1a] text-gray-500 text-[10px]">
+                      <th className="text-left px-3 py-2 w-16">TIME</th>
+                      <th className="text-left px-3 py-2 w-28">ASIN</th>
+                      <th className="text-left px-3 py-2 w-20">STATUS</th>
+                      <th className="text-left px-3 py-2">MESSAGE</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {crawlLog.map((entry, idx) => (
+                      <tr
+                        key={`${entry.asin}-${idx}`}
+                        className={`border-b border-[#1a1a1a]/50 ${
+                          entry.status === 'running'
+                            ? 'bg-yellow-500/5'
+                            : entry.status === 'done'
+                              ? 'bg-green-500/5'
+                              : entry.status === 'error'
+                                ? 'bg-red-500/5'
+                                : ''
+                        }`}
+                      >
+                        <td className="px-3 py-1.5 text-gray-600">{entry.time}</td>
+                        <td className="px-3 py-1.5">
+                          <span className="bg-orange-500/10 text-orange-400 px-1.5 py-0.5 rounded font-mono text-[10px]">
+                            {entry.asin}
+                          </span>
+                        </td>
+                        <td className="px-3 py-1.5">
+                          {entry.status === 'pending' && (
+                            <span className="text-gray-600">⏳ Queued</span>
+                          )}
+                          {entry.status === 'running' && (
+                            <span className="text-yellow-400 flex items-center gap-1">
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              Scanning
+                            </span>
+                          )}
+                          {entry.status === 'done' && (
+                            <span className="text-green-400 flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" />
+                              Done
+                            </span>
+                          )}
+                          {entry.status === 'error' && (
+                            <span className="text-red-400 flex items-center gap-1">
+                              <XCircle className="w-3 h-3" />
+                              Error
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-1.5 text-gray-400">{entry.message}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div ref={logEndRef} />
+              </div>
+            </section>
+          )}
 
           {/* ── DATA PORT ── */}
           <section className="bg-[#111111] rounded-lg border border-[#1a1a1a] overflow-hidden">
@@ -471,7 +695,7 @@ export default function Home() {
                 </h2>
               </div>
               <div className="flex items-center gap-3 text-[10px] text-gray-500">
-                <span>{products.length} scans</span>
+                <span>{products.length} products</span>
                 <span>•</span>
                 <span>{priceRows} price rows</span>
               </div>
@@ -487,7 +711,7 @@ export default function Home() {
                 <Package className="w-8 h-8 mb-2 opacity-30" />
                 <span className="text-xs">No products scanned yet</span>
                 <span className="text-[10px] text-gray-700 mt-1">
-                  Enter an ASIN above and execute a bulk scan
+                  Paste ASINs above and execute a bulk scan
                 </span>
               </div>
             ) : (
@@ -558,7 +782,9 @@ export default function Home() {
                         {REGIONS.map((r) => {
                           const priceInfo = product.prices[r.key]
                           const hasPrice = priceInfo && priceInfo.price !== 'N/A'
-                          const domain = priceInfo?.domain || `amazon.${r.key === 'COM' ? 'com' : r.key.toLowerCase()}`
+                          const domain =
+                            priceInfo?.domain ||
+                            `amazon.${r.key === 'COM' ? 'com' : r.key.toLowerCase()}`
                           const productUrl = `https://www.${domain}/dp/${product.asin}/`
                           return (
                             <td key={r.key} className="px-3 py-2.5">
@@ -607,7 +833,7 @@ export default function Home() {
                 COM • EG • DE • SA • AE
               </span>
             </div>
-            <span className="text-gray-700">SupplierCrawl v1.0 — All prices via AOD buybox only</span>
+            <span className="text-gray-700">SupplierCrawl v1.0 — Bulk AOD Scanner</span>
           </div>
         </footer>
       </main>

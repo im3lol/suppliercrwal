@@ -54,3 +54,28 @@ Stage Summary:
 - COM and DE return N/A due to Amazon anti-bot measures (503 on AOD endpoint)
 - AOD-only price extraction verified working - no fallbacks, no ATC, no alternatives
 - All prices stored in SQLite via Prisma
+---
+Task ID: 1
+Agent: Main Agent
+Task: Add bulk ASIN support with for-loop processing to SupplierCrawl dashboard
+
+Work Log:
+- Read all existing project files (page.tsx, crawl route, products route, export route, db.ts, schema.prisma)
+- Replaced single-line Input with a Textarea for bulk ASIN input (supports newline, comma, space, semicolon separated)
+- Implemented frontend for-loop that processes each ASIN sequentially with 1.5s delay between requests
+- Added real-time crawl log section showing per-ASIN progress (queued → scanning → done/error)
+- Added progress bar and counter (e.g., "3/10 ASINs processed")
+- Added STOP button to abort bulk scan mid-progress
+- Fixed abort mechanism: changed from useState to useRef for reliable async abort
+- Added ASIN validation (10 alphanumeric chars) and deduplication
+- Added valid ASIN counter in textarea corner
+- Removed eslint-disable comment that was causing warnings
+- Verified all API endpoints work (products GET, crawl POST, export GET)
+- Tested with real ASIN B08LKLQP2N — successfully fetched prices from 5 regions via AOD
+
+Stage Summary:
+- Frontend now supports bulk ASIN input with sequential for-loop processing
+- Each ASIN is processed one at a time with a 1.5s delay to avoid rate limiting
+- Real-time progress log shows status of each ASIN
+- Stop button allows aborting mid-scan
+- App is fully functional with real Amazon AOD data extraction
