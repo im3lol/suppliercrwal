@@ -1,28 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { exec } from 'child_process'
-import { join } from 'path'
-
-// Kill leftover agent-browser/chromium processes after crawl
-function cleanupBrowserProcesses(): void {
-  try {
-    exec('pkill -f "agent-browser" 2>/dev/null; pkill -f "chromium.*headless" 2>/dev/null', () => {})
-  } catch { /* ignore */ }
-}
+import { crawlRegion, REGIONS } from '@/lib/browser-crawler'
+import type { CrawlResult } from '@/lib/browser-crawler'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // AOD CRAWLER API
 //
 // Two modes:
-// 1. { asin, regions }: Triggers crawl via standalone script, saves results
-// 2. { asin, results }: Saves pre-crawled results to DB (from frontend)
+// 1. { asin, asins, regions }: Crawl ASIN(s) via agent-browser, save results
+// 2. { asin, results }: Save pre-crawled results to DB (from frontend)
 //
-// The standalone script (scripts/crawl-aod.js) uses agent-browser
-// to scrape real Amazon AOD prices. Prices come from AOD ONLY.
-// If AOD has no offers → return N/A.
+// Uses agent-browser CLI to scrape real Amazon AOD prices.
+// Prices come from AOD ONLY. If AOD has no offers → return N/A.
+// Regions are processed SEQUENTIALLY to avoid browser conflicts.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-const CRAWL_SCRIPT = join(process.cwd(), 'scripts', 'crawl-aod.js')
 
 interface CrawlResultItem {
   domain: string
@@ -46,15 +37,15 @@ export async function POST(request: NextRequest) {
       return await saveResults(asin, preCrawledResults)
     }
 
-    // ── Mode 1: Trigger crawl via standalone script ──
+    // ── Mode 1: Trigger crawl via browser-crawler ──
     const asinList: string[] = asins || (asin ? [asin] : [])
-    const regionKeys: string[] = regions || ['COM', 'EG', 'DE', 'SA', 'AE']
+    const regionKeys: string[] = regions || Object.keys(REGIONS)
 
     if (asinList.length === 0) {
       return NextResponse.json({ error: 'No ASIN provided' }, { status: 400 })
     }
 
-    const allResults = []
+    const allResults: { asin: string; results?: CrawlResultItem[]; error?: string }[] = []
 
     for (const a of asinList) {
       const cleanAsin = a.trim().toUpperCase()
@@ -64,48 +55,21 @@ export async function POST(request: NextRequest) {
         continue
       }
 
-      // Run the standalone crawl script in a new session (setsid)
-      // This isolates Chromium from the Next.js process group
-      const regionArg = regionKeys.join(',')
-      console.log(`[Crawl API] Running crawl script for ${cleanAsin} regions: ${regionArg}`)
+      console.log(`[Crawl API] Starting crawl for ${cleanAsin} regions: ${regionKeys.join(',')}`)
 
-      const crawlResult = await new Promise<string>((resolve, reject) => {
-        // Use setsid to run the script in a new session, preventing
-        // Chromium from killing the Next.js server process group
-        const cmd = `setsid node ${CRAWL_SCRIPT} ${cleanAsin} ${regionArg} 2>/dev/null`
-        exec(
-          cmd,
-          { timeout: 300000, maxBuffer: 10 * 1024 * 1024 },
-          (error, stdout, stderr) => {
-            if (error) {
-              console.error(`[Crawl API] Script error for ${cleanAsin}:`, error.message?.substring(0, 200))
-              if (stdout) resolve(stdout.trim())
-              else reject(error)
-              return
-            }
-            resolve(stdout.trim())
-          }
-        )
-      })
+      // Crawl each region SEQUENTIALLY
+      const crawlResults: CrawlResult[] = []
 
-      // Parse the JSON output
-      let crawlData: { success?: boolean; asin?: string; data?: CrawlResultItem[]; error?: string }
-      try {
-        crawlData = JSON.parse(crawlResult)
-      } catch {
-        console.error(`[Crawl API] Failed to parse output for ${cleanAsin}:`, crawlResult?.substring(0, 200))
-        allResults.push({ asin: cleanAsin, error: 'Failed to parse crawl data', results: [] })
-        continue
-      }
-
-      if (!crawlData.success || !crawlData.data) {
-        allResults.push({ asin: cleanAsin, error: crawlData.error || 'Crawl failed', results: [] })
-        continue
+      for (const regionKey of regionKeys) {
+        console.log(`[Crawl API] Crawling ${cleanAsin} on ${regionKey}...`)
+        const result = await crawlRegion(cleanAsin, regionKey)
+        crawlResults.push(result)
+        console.log(`[Crawl API] ${cleanAsin} on ${regionKey}: price=${result.price} display=${result.priceDisplay}`)
       }
 
       // Save results to DB
-      await saveResults(cleanAsin, crawlData.data)
-      allResults.push({ asin: cleanAsin, results: crawlData.data })
+      await saveResultsToDB(cleanAsin, crawlResults)
+      allResults.push({ asin: cleanAsin, results: crawlResults })
     }
 
     return NextResponse.json({ success: true, data: allResults })
@@ -120,6 +84,11 @@ export async function POST(request: NextRequest) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async function saveResults(asin: string, crawlResults: CrawlResultItem[]) {
+  const result = await saveResultsToDB(asin, crawlResults)
+  return result
+}
+
+async function saveResultsToDB(asin: string, crawlResults: CrawlResultItem[]) {
   const cleanAsin = asin.trim().toUpperCase()
 
   let product = await db.product.findUnique({ where: { asin: cleanAsin } })

@@ -132,3 +132,68 @@ Stage Summary:
 - Only the actual SELLING price from AOD pinned offer is used
 - If no real offer exists → N/A (no fallback to alternative prices)
 - Applied fix across all 5 regions (COM, EG, DE, SA, AE)
+
+---
+Task ID: 1
+Agent: full-stack-developer
+Task: Rewrite Amazon AOD Crawler to use agent-browser
+
+Work Log:
+- Read all existing files: browser-crawler.ts, route.ts, aod-crawler.ts, amazon-crawler.ts, prisma schema, crawl-save route, export route, page.tsx
+- Rewrote browser-crawler.ts with major improvements:
+  - Added agent-browser eval-based direct DOM price extraction (primary method)
+  - Added eval scripts for product name (#aod-asin-title-text / #productTitle) and image (#aod-asin-image-id / #landingImage)
+  - Added eval script for no-offer detection (checks DOM for no-offer elements and phrases)
+  - Added snapshot parsing as fallback when eval fails to find a price
+  - Added agent-browser close at the start of each crawlRegion call (clean state)
+  - Added proper error handling with browser close on catch
+  - Added Arabic numeral conversion (٠-٩ → 0-9) and Arabic decimal separator (٫ → .)
+  - Added comprehensive price parsing for EUR, USD, EGP, SAR, AED formats
+  - Added German/European format handling (9,49 € → 9.49)
+  - Kept region configuration: COM, EG, DE, SA, AE with proper cookies and postal codes
+  - AOD-only extraction enforced: only #aod-pinned-offer and #aod-offer-list are valid sources
+  - Excluded "Other recommended products" section from snapshot parsing
+  - Flow: close → open homepage → set cookies → open AOD URL → wait 3s → eval price → eval name → eval image → eval no-offer check → snapshot fallback → close
+- Rewrote crawl API route (route.ts) to use browser-crawler directly instead of non-existent scripts/crawl-aod.js
+  - Removed exec/setsid subprocess spawning
+  - Imports crawlRegion from browser-crawler and calls it sequentially for each region
+  - Kept two modes: crawl mode and save-results mode
+  - Kept DB saving logic with upsert for Product and Price
+- Simplified aod-crawler.ts to re-export types and functions from browser-crawler.ts
+- Ran lint: no errors in modified files (pre-existing errors in mini-services and scripts are not from this task)
+- Verified dev server is running on port 3000
+
+Stage Summary:
+- browser-crawler.ts: Complete rewrite using agent-browser eval for direct DOM extraction with snapshot fallback
+- route.ts: Rewritten to call browser-crawler directly, no subprocess spawning
+- aod-crawler.ts: Simplified to re-export from browser-crawler
+- Key improvement: Uses eval to extract price directly from DOM (#aod-pinned-offer .a-price .a-offscreen) instead of relying only on snapshot parsing
+- All prices come from AOD ONLY, no fallback to main page
+- Arabic numeral/decimal support for EGP, SAR, AED regions
+- Sequential region processing to avoid browser conflicts
+---
+Task ID: 1
+Agent: main
+Task: Fix Amazon AOD Crawler to use agent-browser for real price extraction
+
+Work Log:
+- Read all project files: aod-crawler.ts, browser-crawler.ts, amazon-crawler.ts, crawl route, page.tsx
+- Tested z-ai-web-dev-sdk page_reader: fetches Amazon pages but doesn't render JavaScript (no AOD overlay)
+- Tested agent-browser CLI: confirmed it works for Amazon AOD pages with proper EUR/USD prices
+- Identified root cause: crawl API route called non-existent scripts/crawl-aod.js
+- Rewrote browser-crawler.ts with dual extraction: eval (DOM direct) + snapshot (fallback)
+- Rewrote crawl API route to use browser-crawler.ts directly instead of subprocess
+- Simplified aod-crawler.ts to re-export from browser-crawler
+- Tested B0DJSW6BDG on DE: €8.93 (correct AOD price from seller HZJZ DE)
+- Tested B08LKLQP2N on COM: $12.99, DE: €7.13 (both correct)
+- Tested all 5 regions: DE (€8.93), COM (N/A - no offers), EG (N/A - no offers), SA (SAR 113.38), AE (AED 76.34)
+- Lint check passes for modified files
+
+Stage Summary:
+- Crawler now uses agent-browser to render JavaScript and extract real AOD prices
+- AOD-only enforcement: prices from #aod-pinned-offer and #aod-offer-list only
+- No-offer detection: returns N/A when AOD has no offers
+- Arabic numeral conversion for EG/SA/AE regions
+- Euro format parsing (9,49 € → 9.49)
+- Sequential region processing to avoid browser conflicts
+- All 5 regions working with correct currency detection

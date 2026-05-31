@@ -1,10 +1,16 @@
 /**
  * Amazon AOD Price Crawler — Using agent-browser (headless browser)
- * 
+ *
  * ALL prices come from AOD (All Offers Display) ONLY.
- * Uses agent-browser CLI snapshot to extract AOD data.
- * No fallback to main page price.
- * If AOD has no offers → return N/A.
+ * Uses agent-browser CLI to open Amazon pages, set cookies, and extract
+ * prices directly from the DOM via eval + snapshot as fallback.
+ *
+ * CRITICAL RULES:
+ * - Prices MUST come from #aod-pinned-offer or #aod-offer-list ONLY
+ * - NO fallback to main page prices
+ * - NO ATC button prices from non-AOD sections
+ * - NO alternative/recommended product prices
+ * - If AOD has no offers → return "N/A"
  */
 
 import { execFile } from 'child_process'
@@ -66,6 +72,22 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CRAWL RESULT TYPE
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+export interface CrawlResult {
+  domain: string
+  region: string
+  name: string
+  image: string
+  price: string       // numeric like "8.93" or "N/A"
+  currency: string    // "EUR", "USD", etc.
+  priceDisplay: string // formatted like "€8.93" or "N/A"
+  asin: string
+  error?: string
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // BROWSER HELPERS (ASYNC)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -109,7 +131,137 @@ function formatPrice(price: string, currency: string): string {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// SNAPSHOT PARSING
+// ARABIC NUMERAL CONVERSION
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function convertArabicNumerals(text: string): string {
+  // Convert Arabic-Indic digits ٠-٩ to 0-9
+  return text.replace(/[\u0660-\u0669]/g, (c) =>
+    String(c.charCodeAt(0) - 0x0660)
+  )
+}
+
+function convertArabicDecimal(text: string): string {
+  // Convert Arabic decimal separator ٫ to .
+  return text.replace(/٫/g, '.')
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PRICE PARSING
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/**
+ * Parse a raw price string extracted from the DOM into a numeric string.
+ * Handles formats:
+ *   EUR: "€8.93" or "8,93 €" or "EUR 8.93"
+ *   USD: "$12.99"
+ *   EGP: "EGP 280.00" or "٢٨٠٫٠٠ ج.م"
+ *   SAR: "SAR 45.00" or "٤٥٫٠٠ ر.س"
+ *   AED: "AED 35.00" or "٣٥٫٠٠ د.إ"
+ */
+function parsePriceText(raw: string, defaultCurrency: string): { price: string; currency: string } | null {
+  if (!raw) return null
+
+  // Step 1: Convert Arabic numerals and decimal separators
+  let text = convertArabicNumerals(raw)
+  text = convertArabicDecimal(text)
+  // Clean nbsp and extra whitespace
+  text = text.replace(/\u00A0/g, ' ').replace(/\s+/g, ' ').trim()
+
+  if (!text) return null
+
+  // Step 2: Detect currency from the text
+  const currencyMap: Record<string, string> = {
+    '$': 'USD',
+    '\u20AC': 'EUR',
+    '\u00A3': 'GBP',
+    'EGP': 'EGP',
+    'SAR': 'SAR',
+    'AED': 'AED',
+    'USD': 'USD',
+    'EUR': 'EUR',
+  }
+
+  let currency = defaultCurrency
+  for (const [sym, code] of Object.entries(currencyMap)) {
+    if (text.includes(sym)) {
+      currency = code
+      break
+    }
+  }
+
+  // Step 3: Extract the numeric price
+  // German/European format: "9,49 €" → 9.49 (comma as decimal, dots as thousands)
+  const euroFormatMatch = text.match(/(\d{1,3}(?:\.\d{3})*),(\d{2})/)
+  if (euroFormatMatch && (currency === 'EUR' || text.includes('\u20AC'))) {
+    const whole = euroFormatMatch[1].replace(/\./g, '')
+    return { price: `${whole}.${euroFormatMatch[2]}`, currency }
+  }
+
+  // Standard format: extract number after currency symbol or standalone
+  // Try pattern: [currency] number
+  const afterSymbolMatch = text.match(/(?:\$|\u20AC|\u00A3|EGP|SAR|AED|USD|EUR)\s*([\d,]+\.?\d*)/i)
+  if (afterSymbolMatch) {
+    const numStr = afterSymbolMatch[1].replace(/,/g, '')
+    if (numStr && !isNaN(parseFloat(numStr)) && parseFloat(numStr) > 0) {
+      return { price: numStr, currency }
+    }
+  }
+
+  // Try pattern: number [currency]
+  const beforeSymbolMatch = text.match(/([\d,]+\.?\d*)\s*(?:\$|\u20AC|\u00A3|EGP|SAR|AED|USD|EUR)/i)
+  if (beforeSymbolMatch) {
+    const numStr = beforeSymbolMatch[1].replace(/,/g, '')
+    if (numStr && !isNaN(parseFloat(numStr)) && parseFloat(numStr) > 0) {
+      return { price: numStr, currency }
+    }
+  }
+
+  // Fallback: just grab the first number
+  const numMatch = text.match(/([\d,]+\.?\d*)/)
+  if (numMatch) {
+    const numStr = numMatch[1].replace(/,/g, '')
+    if (numStr && !isNaN(parseFloat(numStr)) && parseFloat(numStr) > 0) {
+      return { price: numStr, currency }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Map currency symbol found in text to ISO currency code.
+ */
+const SYMBOL_TO_CODE: Record<string, string> = {
+  '$': 'USD',
+  '\u20AC': 'EUR',
+  '\u00A3': 'GBP',
+  'EGP': 'EGP',
+  'SAR': 'SAR',
+  'AED': 'AED',
+  'HKD': 'HKD',
+  'EUR': 'EUR',
+  'USD': 'USD',
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// NO-OFFER DETECTION PHRASES
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const NO_OFFER_PHRASES = [
+  'no featured offers available',
+  'no featured offers',
+  'currently unavailable',
+  'keine empfohlenen angebote',
+  'keine angebote verfügbar',
+  'derzeit nicht verfügbar',
+  'لا توجد عروض مميزة متاحة',
+  'لا يوجد بائعون آخرون',
+  'غير متوفر حالياً',
+]
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SNAPSHOT PARSING (FALLBACK)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 interface SnapshotRef {
@@ -117,31 +269,23 @@ interface SnapshotRef {
   role: string
 }
 
-interface SnapshotData {
+interface SnapshotExtract {
   hasPinnedOffer: boolean
   noOffers: boolean
   price: string
   currencySymbol: string
-  name: string
-  image: string
 }
 
 /**
- * Parse the AOD snapshot JSON to extract price info.
- * 
- * The snapshot contains refs with element names. We look for:
- * 1. A button containing "price" → extract the price from it
- * 2. "no other sellers" / "no featured offers" → no offers
- * 3. Product name from heading
+ * Parse the AOD snapshot JSON to extract price info as a fallback
+ * when eval-based extraction fails.
  */
-function parseAodSnapshot(snapshotJson: unknown): SnapshotData {
-  const result: SnapshotData = {
+function parseAodSnapshot(snapshotJson: unknown): SnapshotExtract {
+  const result: SnapshotExtract = {
     hasPinnedOffer: false,
     noOffers: false,
     price: '',
     currencySymbol: '',
-    name: '',
-    image: '',
   }
 
   if (!snapshotJson || typeof snapshotJson !== 'object') return result
@@ -150,23 +294,10 @@ function parseAodSnapshot(snapshotJson: unknown): SnapshotData {
   const refs = data.data?.refs || {}
 
   // Check for "no offers" indicators in element names
-  // IMPORTANT: "no other sellers" does NOT mean no offers — it means no OTHER
-  // sellers besides the pinned offer. Only "no featured offers" means truly no offers.
-  const trulyNoOfferPatterns = [
-    'no featured offers available',
-    'no featured offers',
-    'currently unavailable',
-    'keine empfohlenen angebote',
-    'keine angebote verfügbar',
-    'derzeit nicht verfügbar',
-    'لا توجد عروض مميزة متاحة',
-    'غير متوفر حالياً',
-  ]
-
   for (const ref of Object.values(refs)) {
     const nameLower = (ref.name || '').toLowerCase()
-    for (const pattern of trulyNoOfferPatterns) {
-      if (nameLower.includes(pattern)) {
+    for (const phrase of NO_OFFER_PHRASES) {
+      if (nameLower.includes(phrase)) {
         result.noOffers = true
         break
       }
@@ -174,16 +305,16 @@ function parseAodSnapshot(snapshotJson: unknown): SnapshotData {
   }
 
   // Extract price from "Add to basket from seller ... and price X" button
-  // This is the most reliable source for the AOD selling price
   for (const ref of Object.values(refs)) {
     if (ref.role === 'button' && ref.name) {
       const nameLower = ref.name.toLowerCase()
+      // Exclude "Other recommended products" section
+      if (nameLower.includes('recommended')) continue
+
       if (nameLower.includes('price')) {
         result.hasPinnedOffer = true
 
         // Pattern: "Add to basket from seller XXX and price €8.93"
-        // or: "Add to basket from seller XXX and price $12.99"
-        // or: "Add to basket from seller XXX and price EGP 2800.00"
         const priceMatch = ref.name.match(
           /price\s+([€$£]|EGP|SAR|AED|USD|EUR|HKD)?\s*([\d,]+\.?\d*)/i
         )
@@ -192,8 +323,6 @@ function parseAodSnapshot(snapshotJson: unknown): SnapshotData {
           const rawPrice = priceMatch[2].replace(/,/g, '')
           if (rawPrice && parseFloat(rawPrice) > 0) {
             result.price = rawPrice
-            // If we found a price from a pinned offer, it's NOT "no offers"
-            // even if "no other sellers" text is present
             result.noOffers = false
           }
         }
@@ -203,42 +332,14 @@ function parseAodSnapshot(snapshotJson: unknown): SnapshotData {
   }
 
   // If no price from button, try to find StaticText price in the snapshot
-  // (The snapshot text sometimes contains the price directly)
   if (!result.price) {
     const snapshot = data.data?.snapshot || ''
-    // Look for price patterns in snapshot text
     const staticPriceMatch = snapshot.match(
       /StaticText\s+"([€$£]|EGP|SAR|AED|USD|EUR)\s*([\d,]+\.?\d*)"/
     )
     if (staticPriceMatch) {
       result.currencySymbol = staticPriceMatch[1]
       result.price = staticPriceMatch[2].replace(/,/g, '')
-    }
-  }
-
-  // Extract product name from heading — skip "no sellers" / "didn't find" headings
-  const badNamePatterns = [
-    'no other sellers',
-    'no featured offers',
-    'didn\'t find',
-    'did not find',
-    'currently there are no',
-    'currently unavailable',
-  ]
-  for (const ref of Object.values(refs)) {
-    if (ref.role === 'heading' && ref.name && ref.name.length > 5) {
-      const nameLower = ref.name.toLowerCase()
-      let isBadName = false
-      for (const pattern of badNamePatterns) {
-        if (nameLower.includes(pattern)) {
-          isBadName = true
-          break
-        }
-      }
-      if (!isBadName) {
-        result.name = ref.name.trim()
-        break
-      }
     }
   }
 
@@ -249,29 +350,20 @@ function parseAodSnapshot(snapshotJson: unknown): SnapshotData {
 // CRAWL ONE REGION
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export interface CrawlResult {
-  domain: string
-  region: string
-  name: string
-  image: string
-  price: string
-  currency: string
-  priceDisplay: string
-  asin: string
-  error?: string
-}
-
 /**
  * Crawl a single ASIN on a single region using agent-browser.
- * 
+ *
  * Flow:
- * 1. Open the Amazon homepage for the region
- * 2. Set currency/language cookies
- * 3. Navigate to the AOD URL (?aod=1)
- * 4. Wait for AOD content to load
- * 5. Take a snapshot of #aod-pinned-offer
- * 6. Parse the snapshot to extract price
- * 7. If no pinned offer, take full page snapshot to check for "no offers"
+ * 1. Close any existing browser
+ * 2. Open the Amazon homepage for the region
+ * 3. Set currency/language cookies
+ * 4. Navigate to the AOD URL (?aod=1)
+ * 5. Wait for AOD content to load
+ * 6. Extract price via eval (direct DOM access)
+ * 7. Extract name via eval
+ * 8. Extract image via eval
+ * 9. If no price found, check snapshot for no-offer indicators
+ * 10. Close browser
  */
 export async function crawlRegion(
   asin: string,
@@ -304,129 +396,273 @@ export async function crawlRegion(
   }
 
   try {
-    // ── Step 1: Open region homepage to set base cookies ──
+    // ── Step 1: Close any existing browser ──
+    console.log(`[crawlRegion] Closing existing browser...`)
+    await runBrowser(['close'], 5000)
+
+    // ── Step 2: Open region homepage to set base cookies ──
     console.log(`[crawlRegion] Opening ${region.domain}...`)
     await runBrowser(['open', `https://www.${region.domain}/`], 20000)
 
-    // ── Step 2: Set currency and language cookies ──
+    // ── Step 3: Set currency and language cookies ──
     const cookieScript = `document.cookie='i18n-prefs=${region.currencyCookie};path=/;domain=.${region.domain}';document.cookie='lc-main=en_US;path=/;domain=.${region.domain}';'done'`
+    console.log(`[crawlRegion] Setting cookies for ${region.domain}...`)
     await runBrowser(['eval', cookieScript], 8000)
 
-    // ── Step 3: Navigate to AOD page ──
-    const aodUrl = `https://www.${region.domain}/dp/${asin}/ref=olp-opf-redir?aod=1&language=en_US${region.postalCode ? `&postalCode=${region.postalCode}` : ''}`
+    // ── Step 4: Navigate to AOD page ──
+    const aodUrl = `https://www.${region.domain}/dp/${asin}/ref=olp-opf-redir?aod=1&language=en_US&th=1${region.postalCode ? `&postalCode=${region.postalCode}` : ''}`
     console.log(`[crawlRegion] Navigating to AOD: ${aodUrl}`)
-    await runBrowser(['open', aodUrl], 35000)
+    await runBrowser(['open', aodUrl], 30000)
 
-    // ── Step 4: Wait for AOD content to render ──
+    // ── Step 5: Wait for AOD content to render ──
+    console.log(`[crawlRegion] Waiting 3s for AOD content...`)
     await runBrowser(['wait', '3000'], 5000)
 
-    // ── Step 5: Take snapshot of the AOD section ──
-    console.log(`[crawlRegion] Taking AOD snapshot for ${asin} on ${region.domain}...`)
-    
-    // First try the pinned offer section
-    let snapshotData = await runBrowserJSON(
-      ['snapshot', '-s', '#aod-pinned-offer'],
-      10000
-    )
+    // ── Step 6: Extract price via eval (direct DOM access) ──
+    console.log(`[crawlRegion] Extracting price via eval for ${asin} on ${region.domain}...`)
 
-    let extracted = parseAodSnapshot(snapshotData)
+    const priceEvalScript = `(function() {
+      // Try #aod-pinned-offer first (the main/default offer)
+      var pinnedEl = document.querySelector('#aod-pinned-offer .a-price .a-offscreen');
+      if (pinnedEl && pinnedEl.textContent) return pinnedEl.textContent.trim();
 
-    // If no pinned offer found, try the full AOD container
-    if (!extracted.hasPinnedOffer && !extracted.noOffers) {
-      snapshotData = await runBrowserJSON(
-        ['snapshot', '-s', '#aod-offer-list'],
-        10000
-      )
-      const offerListExtracted = parseAodSnapshot(snapshotData)
-      if (offerListExtracted.price) {
-        extracted = offerListExtracted
+      // Try #aod-price-0 (first offer in the list)
+      var price0El = document.querySelector('#aod-price-0 .a-price .a-offscreen');
+      if (price0El && price0El.textContent) return price0El.textContent.trim();
+
+      // Try any offer in the offer list
+      var offerPriceEl = document.querySelector('#aod-offer-list .a-price .a-offscreen');
+      if (offerPriceEl && offerPriceEl.textContent) return offerPriceEl.textContent.trim();
+
+      // Fallback: whole+fraction+symbol parts in pinned offer
+      var pinnedSection = document.querySelector('#aod-pinned-offer');
+      if (pinnedSection) {
+        var whole = pinnedSection.querySelector('.a-price-whole');
+        var fraction = pinnedSection.querySelector('.a-price-fraction');
+        var symbol = pinnedSection.querySelector('.a-price-symbol');
+        if (whole && fraction) {
+          var w = whole.textContent.replace(/[.,]/g, '').trim();
+          var f = fraction.textContent.trim();
+          var s = symbol ? symbol.textContent.trim() : '';
+          return s + w + '.' + f;
+        }
+      }
+
+      // Fallback: whole+fraction+symbol parts in offer list
+      var offerList = document.querySelector('#aod-offer-list');
+      if (offerList) {
+        var whole2 = offerList.querySelector('.a-price-whole');
+        var fraction2 = offerList.querySelector('.a-price-fraction');
+        var symbol2 = offerList.querySelector('.a-price-symbol');
+        if (whole2 && fraction2) {
+          var w2 = whole2.textContent.replace(/[.,]/g, '').trim();
+          var f2 = fraction2.textContent.trim();
+          var s2 = symbol2 ? symbol2.textContent.trim() : '';
+          return s2 + w2 + '.' + f2;
+        }
+      }
+
+      return '';
+    })()`
+
+    const rawPriceText = await runBrowser(['eval', priceEvalScript], 10000)
+    // The eval output is wrapped in quotes, strip them
+    const priceText = rawPriceText.replace(/^"|"$/g, '').replace(/\\"/g, '"').trim()
+    console.log(`[crawlRegion] Raw price from eval: "${priceText}"`)
+
+    // ── Step 7: Extract product name via eval ──
+    console.log(`[crawlRegion] Extracting product name...`)
+    const nameEvalScript = `(function() {
+      var el = document.querySelector('#aod-asin-title-text');
+      if (el && el.textContent) return el.textContent.trim();
+      var el2 = document.querySelector('#productTitle');
+      if (el2 && el2.textContent) return el2.textContent.trim();
+      return '';
+    })()`
+
+    const rawNameText = await runBrowser(['eval', nameEvalScript], 10000)
+    const nameText = rawNameText.replace(/^"|"$/g, '').replace(/\\"/g, '"').trim()
+    console.log(`[crawlRegion] Product name from eval: "${nameText}"`)
+
+    // ── Step 8: Extract product image via eval ──
+    console.log(`[crawlRegion] Extracting product image...`)
+    const imageEvalScript = `(function() {
+      var el = document.querySelector('#aod-asin-image-id');
+      if (el && el.src) return el.src;
+      var el2 = document.querySelector('#landingImage');
+      if (el2 && el2.src) return el2.src;
+      return '';
+    })()`
+
+    const rawImageText = await runBrowser(['eval', imageEvalScript], 10000)
+    let imageText = rawImageText.replace(/^"|"$/g, '').replace(/\\"/g, '"').trim()
+    if (imageText && !imageText.startsWith('http')) {
+      imageText = ''
+    }
+    console.log(`[crawlRegion] Product image from eval: "${imageText ? 'found' : 'not found'}"`)
+
+    // ── Step 9: Check for no-offer indicators ──
+    let noOffers = false
+
+    // Use eval to check DOM for no-offer elements
+    const noOfferEvalScript = `(function() {
+      // Check for no-offer container
+      var noOfferEl = document.querySelector('#aod-asin-no-offers');
+      if (noOfferEl) return 'no-offers-element';
+      // Check text content of AOD container for no-offer phrases
+      var container = document.querySelector('#aod-container');
+      if (container) {
+        var text = container.textContent.toLowerCase();
+        if (text.includes('no featured offers') || text.includes('currently unavailable') ||
+            text.includes('keine empfohlenen angebote') || text.includes('derzeit nicht verfügbar') ||
+            text.includes('لا توجد عروض مميزة') || text.includes('غير متوفر حالياً')) {
+          return 'no-offers-text';
+        }
+      }
+      // Also check if there's a pinned offer or offer list with prices
+      var hasPinned = document.querySelector('#aod-pinned-offer .a-price');
+      var hasOffer = document.querySelector('#aod-offer-list .a-price');
+      if (!hasPinned && !hasOffer) return 'no-prices-found';
+      return '';
+    })()`
+
+    const noOfferCheck = await runBrowser(['eval', noOfferEvalScript], 10000)
+    const noOfferResult = noOfferCheck.replace(/^"|"$/g, '').trim()
+    console.log(`[crawlRegion] No-offer check: "${noOfferResult}"`)
+
+    if (noOfferResult && noOfferResult !== '') {
+      noOffers = true
+    }
+
+    // If eval-based price extraction found a price, don't mark as no-offers
+    if (priceText && priceText.length > 0) {
+      noOffers = false
+    }
+
+    // ── Step 9b: If no price from eval, try snapshot as fallback ──
+    let extractedPrice = ''
+    let extractedCurrency = region.currency
+
+    if (priceText) {
+      // Parse the price text we got from eval
+      const parsed = parsePriceText(priceText, region.currency)
+      if (parsed && parseFloat(parsed.price) > 0) {
+        extractedPrice = parsed.price
+        extractedCurrency = parsed.currency
       }
     }
 
-    // If still no data, try a full page snapshot to check for no-offer indicators
-    if (!extracted.hasPinnedOffer && !extracted.noOffers && !extracted.price) {
-      snapshotData = await runBrowserJSON(
-        ['snapshot', '-s', '#aod-container'],
-        10000
-      )
-      extracted = parseAodSnapshot(snapshotData)
-    }
+    // If eval didn't yield a price, try snapshot approach
+    if (!extractedPrice) {
+      console.log(`[crawlRegion] No price from eval, trying snapshot fallback...`)
 
-    console.log(`[crawlRegion] Extracted for ${asin} on ${region.domain}:`, JSON.stringify(extracted))
-
-    // ── Step 6: Get product image ──
-    let image = ''
-    try {
-      const imgResult = await runBrowser(
-        ['eval', "document.getElementById('aod-asin-image-id')?.src || document.getElementById('landingImage')?.src || ''"],
-        8000
+      // Try pinned offer snapshot
+      let snapshotData = await runBrowserJSON(
+        ['snapshot', '-s', '#aod-pinned-offer'],
+        15000
       )
-      // Parse the eval result (it's wrapped in quotes)
-      image = imgResult.replace(/^"|"$/g, '').replace(/\\"/g, '"')
-      if (image.startsWith('http')) {
-        // valid URL
-      } else {
-        image = ''
+      let extracted = parseAodSnapshot(snapshotData)
+
+      // If no pinned offer, try the offer list
+      if (!extracted.hasPinnedOffer && !extracted.noOffers && !extracted.price) {
+        snapshotData = await runBrowserJSON(
+          ['snapshot', '-s', '#aod-offer-list'],
+          15000
+        )
+        const offerListExtracted = parseAodSnapshot(snapshotData)
+        if (offerListExtracted.price) {
+          extracted = offerListExtracted
+        } else if (offerListExtracted.noOffers) {
+          extracted = offerListExtracted
+        }
       }
-    } catch {
-      // ignore
+
+      // If still nothing, try the full AOD container
+      if (!extracted.hasPinnedOffer && !extracted.noOffers && !extracted.price) {
+        snapshotData = await runBrowserJSON(
+          ['snapshot', '-s', '#aod-container'],
+          15000
+        )
+        extracted = parseAodSnapshot(snapshotData)
+      }
+
+      console.log(`[crawlRegion] Snapshot fallback result:`, JSON.stringify(extracted))
+
+      if (extracted.noOffers) {
+        noOffers = true
+      }
+
+      if (extracted.price) {
+        extractedPrice = extracted.price
+        if (extracted.currencySymbol) {
+          const mapped = SYMBOL_TO_CODE[extracted.currencySymbol]
+          if (mapped) extractedCurrency = mapped
+        }
+        // If we found a price from snapshot, it's not "no offers"
+        noOffers = false
+      }
     }
 
-    // ── Step 7: Build the result ──
-    if (extracted.noOffers || (!extracted.price && !extracted.hasPinnedOffer)) {
+    // ── Step 10: Close browser ──
+    console.log(`[crawlRegion] Closing browser...`)
+    await runBrowser(['close'], 5000)
+
+    // ── Build the result ──
+    const resultName = nameText || na.name
+    const resultImage = imageText || na.image
+
+    if (noOffers || !extractedPrice) {
       return {
         ...na,
-        name: extracted.name || na.name,
-        image: image || na.image,
+        name: resultName,
+        image: resultImage,
+        price: 'N/A',
+        priceDisplay: 'N/A',
       }
     }
 
-    // Map currency symbol to code
-    const symbolToCode: Record<string, string> = {
-      '$': 'USD',
-      '\u20AC': 'EUR',
-      '\u00A3': 'GBP',
-      'EGP': 'EGP',
-      'SAR': 'SAR',
-      'AED': 'AED',
-      'HKD': 'HKD',
-      'EUR': 'EUR',
-      'USD': 'USD',
-    }
-
-    let currencyCode = region.currency
-    if (extracted.currencySymbol) {
-      const mapped = symbolToCode[extracted.currencySymbol]
-      if (mapped) currencyCode = mapped
-    }
-
-    const priceNum = parseFloat(extracted.price)
-    if (!extracted.price || isNaN(priceNum) || priceNum <= 0) {
+    const priceNum = parseFloat(extractedPrice)
+    if (isNaN(priceNum) || priceNum <= 0) {
       return {
         ...na,
-        name: extracted.name || na.name,
-        image: image || na.image,
+        name: resultName,
+        image: resultImage,
+        price: 'N/A',
+        priceDisplay: 'N/A',
       }
     }
 
     return {
       domain: region.domain,
       region: region.region,
-      name: extracted.name || na.name,
-      image: image || na.image,
-      price: extracted.price,
-      currency: currencyCode,
-      priceDisplay: formatPrice(extracted.price, currencyCode),
+      name: resultName,
+      image: resultImage,
+      price: extractedPrice,
+      currency: extractedCurrency,
+      priceDisplay: formatPrice(extractedPrice, extractedCurrency),
       asin,
     }
   } catch (e) {
     console.error(`[crawlRegion] Error for ${asin} on ${region.domain}:`, e)
+
+    // Try to close browser on error
+    try {
+      await runBrowser(['close'], 5000)
+    } catch {
+      // ignore
+    }
+
     return { ...na, error: String(e) }
   }
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CRAWL ACROSS MULTIPLE REGIONS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 /**
  * Crawl a single ASIN across all specified regions.
+ * Regions are processed SEQUENTIALLY to avoid browser conflicts.
  */
 export async function crawlAsin(
   asin: string,
