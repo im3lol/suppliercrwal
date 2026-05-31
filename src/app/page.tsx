@@ -856,7 +856,7 @@ export default function Home() {
                       </Button>
                     )}
                     <div className="text-[10px] text-gray-600 ml-2">
-                      Built-in page reader • 1 request per region • AOD-only prices
+                      Smart Fetch (page_reader + direct fetch) • 1 request per region • AOD-only prices
                     </div>
                   </div>
                 </div>
@@ -1427,10 +1427,19 @@ export default function Home() {
                 </div>
                 <div className="p-5 space-y-4">
                   <div className="bg-green-500/10 border border-green-500/30 rounded-md p-3 mb-3">
-                    <p className="text-xs text-green-400 font-bold mb-1">✅ Built-in Page Reader — No API Key Needed</p>
+                    <p className="text-xs text-green-400 font-bold mb-1">✅ Smart Fetch — Dual Method Crawler</p>
                     <p className="text-xs text-gray-400">
-                      The app uses a built-in page reader to fetch Amazon offer-listing pages directly.
-                      No external API key is required — everything works out of the box.
+                      The app uses a smart two-layer approach to fetch Amazon pages: <strong className="text-gray-200">page_reader</strong> (SDK-based, 
+                      works in development) with automatic fallback to <strong className="text-gray-200">direct HTTP fetch</strong> (works on Vercel). 
+                      No API key needed for either method.
+                    </p>
+                  </div>
+                  <div className="bg-blue-500/10 border border-blue-500/30 rounded-md p-3 mb-3">
+                    <p className="text-xs text-blue-400 font-bold mb-1">🔄 How Fallback Works</p>
+                    <p className="text-xs text-gray-400">
+                      <strong className="text-gray-200">1. page_reader</strong> — Tries the z-ai SDK first (best quality, works in sandbox).<br/>
+                      <strong className="text-gray-200">2. direct_fetch</strong> — If page_reader fails (e.g. on Vercel), automatically falls back to direct HTTP with browser-like headers.<br/>
+                      <strong className="text-gray-200">3. Result</strong> — If either method succeeds, prices are extracted normally.
                     </p>
                   </div>
                   <div className="bg-red-500/10 border border-red-500/30 rounded-md p-3">
@@ -1450,7 +1459,7 @@ export default function Home() {
                       </div>
                       <div className="flex items-start gap-2">
                         <span className="text-orange-400 text-[10px] mt-0.5">02</span>
-                        <p className="text-xs text-gray-400">Page reader fetches offer-listing pages from each Amazon region</p>
+                        <p className="text-xs text-gray-400">Smart fetch tries page_reader first, then direct HTTP as fallback</p>
                       </div>
                       <div className="flex items-start gap-2">
                         <span className="text-orange-400 text-[10px] mt-0.5">03</span>

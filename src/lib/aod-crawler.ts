@@ -121,7 +121,8 @@ export interface CrawlResult {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// PAGE READER FETCH (z-ai-web-dev-sdk)
+// FETCH METHOD 1: z-ai-web-dev-sdk page_reader
+// Works in sandbox/dev environment. May not work on Vercel (no .z-ai-config).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 interface PageReaderResult {
@@ -133,19 +134,33 @@ interface PageReaderResult {
 
 // Lazy-initialized ZAI singleton
 let _zaiInstance: any = null
+let _zaiInitError: string | null = null
 
 async function getZAI() {
+  if (_zaiInitError) return null
   if (!_zaiInstance) {
-    const ZAI = (await import('z-ai-web-dev-sdk')).default
-    _zaiInstance = await ZAI.create()
+    try {
+      const ZAI = (await import('z-ai-web-dev-sdk')).default
+      _zaiInstance = await ZAI.create()
+      console.log('[ZAI] SDK initialized successfully')
+    } catch (e) {
+      _zaiInitError = e instanceof Error ? e.message : String(e)
+      console.warn(`[ZAI] SDK init failed: ${_zaiInitError}`)
+      return null
+    }
   }
   return _zaiInstance
 }
 
 async function fetchWithPageReader(
   url: string,
-  maxRetries = 2
+  maxRetries = 1
 ): Promise<PageReaderResult> {
+  const zai = await getZAI()
+  if (!zai) {
+    return { html: '', title: '', errorMsg: `ZAI SDK not available: ${_zaiInitError}`, retryCount: 0 }
+  }
+
   let lastErrorMsg = ''
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -157,8 +172,15 @@ async function fetchWithPageReader(
         console.log(`[PageReader] Fetching: ${url}`)
       }
 
-      const zai = await getZAI()
       const result = await zai.functions.invoke('page_reader', { url })
+
+      // Check for sandbox inactive error
+      if (result?.error === 'sandbox is inactive' || result?.data?.error === 'sandbox is inactive') {
+        lastErrorMsg = 'ZAI page_reader: sandbox is inactive'
+        console.error(`[PageReader] Sandbox inactive (attempt ${attempt + 1}/${maxRetries + 1})`)
+        if (attempt < maxRetries) continue
+        return { html: '', title: '', errorMsg: lastErrorMsg, retryCount: attempt }
+      }
 
       // Check response structure
       if (!result || !result.data) {
@@ -190,6 +212,174 @@ async function fetchWithPageReader(
   }
 
   return { html: '', title: '', errorMsg: lastErrorMsg || 'Max retries exceeded', retryCount: maxRetries }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FETCH METHOD 2: Direct HTTP Fetch (Vercel-compatible fallback)
+// Uses fetch() with browser-like headers. Works on Vercel serverless.
+// May get blocked by Amazon's anti-bot, but often works with proper headers.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+interface DirectFetchResult {
+  html: string
+  errorMsg: string
+  retryCount: number
+  statusCode: number
+}
+
+// Rotate User-Agent strings to avoid detection
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+]
+
+async function fetchWithDirectHttp(
+  url: string,
+  maxRetries = 2
+): Promise<DirectFetchResult> {
+  let lastErrorMsg = ''
+  let lastStatusCode = 0
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        console.log(`[DirectFetch] Retry attempt ${attempt} for: ${url}`)
+        await new Promise((r) => setTimeout(r, 3000 * attempt))
+      } else {
+        console.log(`[DirectFetch] Fetching: ${url}`)
+      }
+
+      const ua = USER_AGENTS[attempt % USER_AGENTS.length]
+
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': ua,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          'Sec-Fetch-User': '?1',
+          'Upgrade-Insecure-Requests': '1',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(30000),
+      })
+
+      lastStatusCode = response.status
+
+      if (response.status === 503) {
+        // Amazon CAPTCHA/block page
+        lastErrorMsg = `Amazon blocked request (HTTP 503 — CAPTCHA or bot detection)`
+        console.error(`[DirectFetch] HTTP 503 — Amazon bot detection (attempt ${attempt + 1}/${maxRetries + 1})`)
+        if (attempt < maxRetries) continue
+        return { html: '', errorMsg: lastErrorMsg, retryCount: attempt, statusCode: lastStatusCode }
+      }
+
+      if (response.status === 404) {
+        lastErrorMsg = `Page not found (HTTP 404)`
+        console.error(`[DirectFetch] HTTP 404 (attempt ${attempt + 1}/${maxRetries + 1})`)
+        return { html: '', errorMsg: lastErrorMsg, retryCount: attempt, statusCode: lastStatusCode }
+      }
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '')
+        lastErrorMsg = `HTTP ${response.status}: ${body.slice(0, 200)}`
+        console.error(`[DirectFetch] HTTP ${response.status} (attempt ${attempt + 1}/${maxRetries + 1}): ${body.slice(0, 100)}`)
+        if (attempt < maxRetries) continue
+        return { html: '', errorMsg: lastErrorMsg, retryCount: attempt, statusCode: lastStatusCode }
+      }
+
+      const html = await response.text()
+
+      if (!html || html.length < 500) {
+        lastErrorMsg = `Response too small (${html.length} chars) — likely blocked`
+        console.error(`[DirectFetch] Tiny response (${html.length} chars) (attempt ${attempt + 1}/${maxRetries + 1})`)
+        if (attempt < maxRetries) continue
+        return { html: '', errorMsg: lastErrorMsg, retryCount: attempt, statusCode: lastStatusCode }
+      }
+
+      // Check if we got a CAPTCHA page
+      if (html.includes('Type the characters you see in this image') ||
+          html.includes('api-services-support@amazon.com') ||
+          html.includes('To discuss automated access')) {
+        lastErrorMsg = 'Amazon CAPTCHA page detected'
+        console.error(`[DirectFetch] CAPTCHA page (attempt ${attempt + 1}/${maxRetries + 1})`)
+        if (attempt < maxRetries) continue
+        return { html: '', errorMsg: lastErrorMsg, retryCount: attempt, statusCode: lastStatusCode }
+      }
+
+      console.log(`[DirectFetch] Success! HTML: ${html.length} chars, status: ${response.status}`)
+      return { html, errorMsg: '', retryCount: attempt, statusCode: lastStatusCode }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      lastErrorMsg = `DirectFetch error: ${msg}`
+      console.error(`[DirectFetch] Error (attempt ${attempt + 1}/${maxRetries + 1}): ${msg}`)
+      if (attempt < maxRetries) continue
+      return { html: '', errorMsg: lastErrorMsg, retryCount: attempt, statusCode: lastStatusCode }
+    }
+  }
+
+  return { html: '', errorMsg: lastErrorMsg || 'Max retries exceeded', retryCount: maxRetries, statusCode: lastStatusCode }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SMART FETCH: Try page_reader first, fall back to direct HTTP
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+interface SmartFetchResult {
+  html: string
+  markdown: string
+  fetchMethod: string
+  errorMsg: string
+  retryCount: number
+}
+
+async function smartFetch(url: string): Promise<SmartFetchResult> {
+  // Strategy 1: Try z-ai page_reader (works in sandbox/dev)
+  const prResult = await fetchWithPageReader(url)
+  if (prResult.html) {
+    const markdown = prResult.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 5000)
+    return {
+      html: prResult.html,
+      markdown,
+      fetchMethod: 'page_reader',
+      errorMsg: '',
+      retryCount: prResult.retryCount,
+    }
+  }
+
+  console.log(`[SmartFetch] page_reader failed (${prResult.errorMsg}), trying direct HTTP...`)
+
+  // Strategy 2: Try direct HTTP fetch (works on Vercel)
+  const dfResult = await fetchWithDirectHttp(url)
+  if (dfResult.html) {
+    const markdown = dfResult.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 5000)
+    return {
+      html: dfResult.html,
+      markdown,
+      fetchMethod: 'direct_fetch',
+      errorMsg: '',
+      retryCount: dfResult.retryCount,
+    }
+  }
+
+  // Both methods failed
+  const combinedError = `page_reader: ${prResult.errorMsg} | direct_fetch: ${dfResult.errorMsg}`
+  console.error(`[SmartFetch] Both methods failed: ${combinedError}`)
+  return {
+    html: '',
+    markdown: '',
+    fetchMethod: 'all_failed',
+    errorMsg: combinedError,
+    retryCount: prResult.retryCount + dfResult.retryCount,
+  }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -825,14 +1015,14 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWL ONE REGION — z-ai page_reader only (Crawleo removed)
+// CRAWL ONE REGION — Smart Fetch: page_reader → direct_fetch
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /**
  * Crawl a single ASIN on a single region.
  *
- * Uses z-ai-web-dev-sdk's page_reader exclusively (no API key needed).
- * Crawleo API has been removed because the sandbox is inactive.
+ * Uses Smart Fetch: page_reader first (sandbox), then direct HTTP fallback (Vercel).
+ * No API key needed for either method.
  *
  * Prices come from Offer Listing page ONLY. If no offers → N/A.
  */
@@ -881,34 +1071,28 @@ export async function crawlRegion(
 
     // Log request details
     logBuilder.setRequest({
-      crawleoApiUrl: 'z-ai page_reader (Crawleo removed — sandbox inactive)',
+      crawleoApiUrl: 'smart_fetch (page_reader → direct_fetch)',
       targetUrl: url,
       geolocation: region.geo,
-      apiKey: '(page_reader - no key needed)',
+      apiKey: '(no key needed — auto fallback)',
     })
 
-    console.log(`[crawlRegion] Request: URL=${url}, method=page_reader`)
+    console.log(`[crawlRegion] Request: URL=${url}, method=smart_fetch`)
 
-    let rawHtml = ''
-    let markdown = ''
-    let errorMsg = ''
-    let retryCount = 0
+    // ── Smart Fetch: page_reader first, then direct HTTP fallback ──
+    const fetchResult = await smartFetch(url)
 
-    // ── Always use z-ai-web-dev-sdk page_reader (no API key needed) ──
-    const prResult = await fetchWithPageReader(url)
-    rawHtml = prResult.html
-    errorMsg = prResult.errorMsg
-    retryCount = prResult.retryCount
-
-    // page_reader returns HTML content directly — no separate markdown
-    // We can generate a simple text version from the HTML for markdown-based parsing
-    markdown = rawHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 5000)
+    const rawHtml = fetchResult.html
+    const markdown = fetchResult.markdown
+    const errorMsg = fetchResult.errorMsg
+    const fetchMethod = fetchResult.fetchMethod
+    const retryCount = fetchResult.retryCount
 
     const timingMs = Date.now() - startTime
 
     // Log response details
     logBuilder.setResponse({
-      crawleoHttpStatus: 200,
+      crawleoHttpStatus: fetchMethod === 'page_reader' ? 200 : 200,
       pageStatusCode: 200,
       credits: 0,
       retryCount: retryCount,
@@ -916,11 +1100,11 @@ export async function crawlRegion(
       errorMsg: errorMsg,
     })
 
-    console.log(`[crawlRegion] Response: method=page_reader, html=${rawHtml.length} chars, md=${markdown.length} chars, time=${timingMs}ms`)
+    console.log(`[crawlRegion] Response: method=${fetchMethod}, html=${rawHtml.length} chars, md=${markdown.length} chars, time=${timingMs}ms`)
 
     const debugBase: CrawlDebugInfo = {
       url,
-      fetchMethod: 'page_reader',
+      fetchMethod,
       pageStatusCode: 200,
       htmlSize: rawHtml.length,
       markdownSize: markdown.length,
