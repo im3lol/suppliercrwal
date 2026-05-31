@@ -242,14 +242,7 @@ def parse_price(raw_html, markdown, region_key):
     html_clean = html.replace("\u200e", "").replace("\u200f", "")
     md_clean = md.replace("\u200e", "").replace("\u200f", "")
 
-    # Check for no-offer indicators FIRST
-    lower_md = md_clean.lower()
-    lower_html = html_clean.lower()
-    for phrase in NO_OFFER_PHRASES:
-        if phrase.lower() in lower_md or phrase.lower() in lower_html:
-            return {"price": "N/A", "currency": default_currency, "name": "", "image": ""}
-
-    # ── Extract product name ──
+    # ── Extract product name (BEFORE offer count check so it's available for N/A returns) ──
     name = ""
     # From HTML title tag
     title_match = re.search(r'<title[^>]*>(.*?)</title>', html_clean, re.IGNORECASE | re.DOTALL)
@@ -280,6 +273,40 @@ def parse_price(raw_html, markdown, region_key):
     img_match = re.search(r'src=["\']?(https?://[^"\'>\s]*images-amazon[^"\'>\s]*/images/I/[^"\'>\s]+)', html_clean)
     if img_match:
         image = img_match.group(1)
+
+    # ── Check for truly no offers ──
+    # "No featured offers available" does NOT mean no offers at all —
+    # it just means no PINNED/featured offer.
+    # Also, aod-total-offer-count only counts "other sellers", NOT pinned offers.
+    # So aod-total-offer-count=0 can still have a pinned offer with a price.
+    # We need to check BOTH: offer count AND presence of #aod-price-* elements.
+    lower_md = md_clean.lower()
+    lower_html = html_clean.lower()
+
+    # Check aod-total-offer-count (counts "other sellers" only)
+    offer_count_match = re.search(
+        r'id="aod-total-offer-count"[^>]*value="(\d+)"',
+        html_clean
+    )
+    if not offer_count_match:
+        # Try alternate pattern (value before id)
+        offer_count_match = re.search(
+            r'value="(\d+)"[^>]*id="aod-total-offer-count"',
+            html_clean
+        )
+
+    total_offers = int(offer_count_match.group(1)) if offer_count_match else -1
+    print(f"[Parse] aod-total-offer-count = {total_offers}", file=sys.stderr)
+
+    # Check for #aod-price-* elements (these indicate actual price offers exist)
+    price_elements = re.findall(r'id="aod-price-\d+"', html_clean)
+    has_price_elements = len(price_elements) > 0
+    print(f"[Parse] aod-price-* elements found: {len(price_elements)} ({price_elements[:5]})", file=sys.stderr)
+
+    # Only return N/A if BOTH: no other sellers (offer count = 0) AND no price elements at all
+    if total_offers == 0 and not has_price_elements:
+        print(f"[Parse] No offers at all (offer-count=0, no aod-price elements) → N/A", file=sys.stderr)
+        return {"price": "N/A", "currency": default_currency, "name": name, "image": image}
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # PRICE EXTRACTION — Strategy 1: Accessibility label (BEST)
@@ -357,7 +384,20 @@ def parse_price(raw_html, markdown, region_key):
         print(f"[Parse] Price from markdown: {price_result}", file=sys.stderr)
         return {"price": price_result["price"], "currency": price_result["currency"], "name": name, "image": image}
 
-    print(f"[Parse] No price found for {region_key}", file=sys.stderr)
+    # ── Fallback: check for no-offer phrases if we couldn't find a price ──
+    # Only use NO_OFFER_PHRASES as a last-resort indicator,
+    # NOT as an early return (because "No featured offers" ≠ no offers at all).
+    if total_offers == -1 and not has_price_elements:
+        # We couldn't find aod-total-offer-count OR aod-price elements in HTML
+        # Check if BOTH "no featured offers" AND "no other sellers" are present
+        has_no_featured = any(p.lower() in lower_html or p.lower() in lower_md for p in NO_OFFER_PHRASES[:3])
+        no_other_sellers = "no other sellers" in lower_html or "no other sellers" in lower_md
+        no_sellers_ar = "\u0644\u0627 \u064a\u0648\u062c\u062f \u0628\u0627\u0626\u0639\u0648\u0646 \u0622\u062e\u0631\u0648\u0646" in lower_html or "\u0644\u0627 \u064a\u0648\u062c\u062f \u062d\u0627\u0644\u064a\u064b\u0627 \u0628\u0627\u0626\u0639\u0648\u0646" in lower_html  # لا يوجد بائعون آخرون / لا يوجد حاليا بائعون
+        if has_no_featured and (no_other_sellers or no_sellers_ar):
+            print(f"[Parse] No offers detected (no featured + no other sellers) → N/A", file=sys.stderr)
+            return {"price": "N/A", "currency": default_currency, "name": name, "image": image}
+
+    print(f"[Parse] No price found for {region_key} → N/A", file=sys.stderr)
     return {"price": "N/A", "currency": default_currency, "name": name, "image": image}
 
 

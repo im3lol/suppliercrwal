@@ -291,3 +291,30 @@ Stage Summary:
 - All 5 regions return correct AOD prices
 - Python subprocess approach is more stable than direct fetch in Next.js
 - API key parameter: crawleoApiKey (stored in localStorage as crawleo_api_key)
+---
+Task ID: 1
+Agent: Main
+Task: Fix AOD price extraction based on user's reference HTML data
+
+Work Log:
+- Read current scrape.py and identified the critical bug: "No featured offers available" phrase was causing premature N/A returns
+- This phrase appears even when there ARE offers (e.g., COM has no pinned offer but has offers in the list)
+- Fixed by replacing the NO_OFFER_PHRASES early-return check with a smarter dual-check approach:
+  1. Check `aod-total-offer-count` value in HTML (counts "other sellers" only, NOT pinned offers)
+  2. Check for `#aod-price-*` elements (indicates actual price offers exist)
+  3. Only return N/A if BOTH: offer count = 0 AND no price elements
+- Moved name/image extraction BEFORE the offer count check to avoid UnboundLocalError
+- Added Arabic "لا يوجد حاليا بائعون" pattern for no-sellers detection
+- Tested all 5 regions with ASIN B0725CQ787:
+  - COM: $17.49 ✅ (from accessibility label, AOD has 3 other offers)
+  - DE: N/A ✅ (aod-total-offer-count=0, no aod-price elements)
+  - SA: SAR 130.00 ✅ (from accessibility label "130.00 ريال")
+  - AE: AED 109.21 ✅ (from accessibility label "109.21 درهم")
+  - EG: EGP 3,400.00 ✅ (from accessibility label "3,400.00 جنيه", aod-total-offer-count=0 but has aod-price-0)
+- Verified API key is already saved as default in frontend
+
+Stage Summary:
+- Core bug fixed: "No featured offers available" no longer causes premature N/A returns
+- `aod-total-offer-count` only counts OTHER sellers, not pinned offers - key insight
+- All 5 regions now return correct prices matching user's reference data
+- API key sk_3bc649fd_... is saved as default in frontend
