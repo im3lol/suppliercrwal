@@ -128,13 +128,12 @@ export default function Home() {
   // Default Crawleo API key from env
   const DEFAULT_CRAWLEO_KEY = process.env.NEXT_PUBLIC_CRAWLEO_API_KEY || ''
 
-  // Load Crawleo API key from localStorage (fall back to env key)
+  // Auto-clear any old Crawleo API key from localStorage (no longer needed)
   useEffect(() => {
-    const savedKey = localStorage.getItem('crawleo_api_key') || DEFAULT_CRAWLEO_KEY
-    setCrawleoApiKey(savedKey)
-    setApiKeyDraft(savedKey)
-    if (!localStorage.getItem('crawleo_api_key') && DEFAULT_CRAWLEO_KEY) {
-      localStorage.setItem('crawleo_api_key', DEFAULT_CRAWLEO_KEY)
+    const oldKey = localStorage.getItem('crawleo_api_key')
+    if (oldKey) {
+      localStorage.removeItem('crawleo_api_key')
+      console.log('[Init] Removed old Crawleo API key from localStorage — no longer needed')
     }
   }, [])
 
@@ -220,25 +219,21 @@ export default function Home() {
     }
   }, [])
 
-  // Test Crawleo API key
+  // Test Page Reader connectivity
   const handleTestApiKey = async () => {
-    if (!crawleoApiKey) {
-      toast({ title: 'No API Key', description: 'Enter your Crawleo API key first', variant: 'destructive' })
-      return
-    }
     setApiTestRunning(true)
     setApiTestResults([])
     setShowApiTest(true)
     try {
-      const res = await fetch(`/api/test-crawleo?apiKey=${encodeURIComponent(crawleoApiKey)}`)
+      const res = await fetch('/api/test-crawleo')
       const data = await res.json()
       if (data.results) {
         setApiTestResults(data.results)
         const successCount = data.results.filter((r: any) => r.status === 'success').length
         toast({
-          title: successCount >= 2 ? 'API Key Works!' : 'API Key Issues Detected',
+          title: successCount >= 1 ? 'Page Reader Works!' : 'Page Reader Issues',
           description: `${successCount}/${data.results.length} tests passed`,
-          variant: successCount >= 2 ? 'default' : 'destructive',
+          variant: successCount >= 1 ? 'default' : 'destructive',
         })
       }
     } catch (e) {
@@ -1563,7 +1558,16 @@ export default function Home() {
               {f === 'all' ? 'ALL' : f === 'error' ? 'ERRORS' : f === 'success' ? 'FOUND' : 'N/A'}
             </button>
           ))}
-          {/* Crawleo API test removed — page_reader is the only method now */}
+          <Button
+            variant="outline"
+            size="sm"
+            className={`bg-transparent border-orange-500/50 text-orange-400 hover:bg-orange-500/10 text-[10px] h-6 ${apiTestRunning ? 'opacity-50' : ''}`}
+            onClick={handleTestApiKey}
+            disabled={apiTestRunning}
+          >
+            {apiTestRunning ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Zap className="w-3 h-3 mr-1" />}
+            TEST PAGE READER
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -1597,7 +1601,7 @@ export default function Home() {
         <div className="flex items-center justify-between px-4 py-3 border-b border-[#1a1a1a]">
           <div className="flex items-center gap-2">
             <Server className="w-4 h-4 text-orange-400" />
-            <h2 className="text-xs font-bold tracking-wider">CRAWLEO API TEST</h2>
+            <h2 className="text-xs font-bold tracking-wider">PAGE READER TEST</h2>
             <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
               apiTestResults.every(r => r.status === 'success') ? 'bg-green-500/10 text-green-400' :
               apiTestResults.some(r => r.status === 'success') ? 'bg-yellow-500/10 text-yellow-400' :
