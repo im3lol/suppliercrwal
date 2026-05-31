@@ -77,3 +77,10 @@ Caddyfile
 
 # Download folder
 /download/
+
+# Upload folder (old Python scripts)
+/upload/
+
+# Old/deprecated files
+start-next.sh
+supervisor.sh

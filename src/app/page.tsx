@@ -87,14 +87,14 @@ export default function Home() {
 
   const { toast } = useToast()
 
-  // Default Crawleo API key
-  const DEFAULT_CRAWLEO_KEY = 'sk_3bc649fd_27bf05dac0eefed97f0312200ee986e587db69f235677d5289f0e1d683c5efe4'
+  // Default Crawleo API key from env
+  const DEFAULT_CRAWLEO_KEY = process.env.NEXT_PUBLIC_CRAWLEO_API_KEY || ''
 
-  // Load Crawleo API key from localStorage (fall back to default key)
+  // Load Crawleo API key from localStorage (fall back to env key)
   useEffect(() => {
     const savedKey = localStorage.getItem('crawleo_api_key') || DEFAULT_CRAWLEO_KEY
     setCrawleoApiKey(savedKey)
-    if (!localStorage.getItem('crawleo_api_key')) {
+    if (!localStorage.getItem('crawleo_api_key') && DEFAULT_CRAWLEO_KEY) {
       localStorage.setItem('crawleo_api_key', DEFAULT_CRAWLEO_KEY)
     }
   }, [])
