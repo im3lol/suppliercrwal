@@ -36,7 +36,7 @@ interface Product {
   prices: Record<string, PriceInfo>
 }
 
-type ViewMode = 'live' | 'history'
+type ViewMode = 'live' | 'history' | 'settings'
 type SortField = 'asin' | 'name' | 'lastScan' | 'COM' | 'EG' | 'DE' | 'SA' | 'AE'
 type SortDir = 'asc' | 'desc'
 
@@ -73,6 +73,8 @@ export default function Home() {
   const [crawlCurrent, setCrawlCurrent] = useState(0)
   const [crawlTotal, setCrawlTotal] = useState(0)
   const [crawleoApiKey, setCrawleoApiKey] = useState('')
+  const [apiKeyDraft, setApiKeyDraft] = useState('')
+  const [apiKeySaved, setApiKeySaved] = useState(false)
   const [dbSetupNeeded, setDbSetupNeeded] = useState(false)
   const [setupSql, setSetupSql] = useState('')
   const [showSetup, setShowSetup] = useState(false)
@@ -94,15 +96,23 @@ export default function Home() {
   useEffect(() => {
     const savedKey = localStorage.getItem('crawleo_api_key') || DEFAULT_CRAWLEO_KEY
     setCrawleoApiKey(savedKey)
+    setApiKeyDraft(savedKey)
     if (!localStorage.getItem('crawleo_api_key') && DEFAULT_CRAWLEO_KEY) {
       localStorage.setItem('crawleo_api_key', DEFAULT_CRAWLEO_KEY)
     }
   }, [])
 
-  // Save API key to localStorage when it changes
-  const handleApiKeyChange = (key: string) => {
+  // Save API key permanently to localStorage
+  const handleSaveApiKey = () => {
+    const key = apiKeyDraft.trim()
     setCrawleoApiKey(key)
     localStorage.setItem('crawleo_api_key', key)
+    setApiKeySaved(true)
+    toast({
+      title: 'API Key Saved',
+      description: key ? 'Crawleo API key saved permanently' : 'API key cleared',
+    })
+    setTimeout(() => setApiKeySaved(false), 2000)
   }
 
   // Update clock
@@ -497,18 +507,24 @@ export default function Home() {
           ))}
 
           <div className="text-[10px] text-gray-600 uppercase tracking-widest mt-4 mb-2 px-2">System</div>
-          {[
-            { icon: Settings, label: 'API Config' },
-            { icon: Shield, label: 'Proxy Health' },
-          ].map((item) => (
-            <button
-              key={item.label}
-              className="w-full flex items-center gap-2.5 px-3 py-2 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-[#1a1a1a] transition-colors"
-            >
-              <item.icon className="w-3.5 h-3.5" />
-              {item.label}
-            </button>
-          ))}
+          <button
+            onClick={() => setViewMode('settings')}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded text-xs transition-colors ${
+              viewMode === 'settings'
+                ? 'bg-orange-500/10 text-orange-400'
+                : 'text-gray-500 hover:text-gray-300 hover:bg-[#1a1a1a]'
+            }`}
+          >
+            <Settings className="w-3.5 h-3.5" />
+            API Config
+            {viewMode === 'settings' && <ChevronRight className="w-3 h-3 ml-auto" />}
+          </button>
+          <button
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-[#1a1a1a] transition-colors"
+          >
+            <Shield className="w-3.5 h-3.5" />
+            Proxy Health
+          </button>
         </nav>
 
         <div className="p-3 border-t border-[#1a1a1a] space-y-2">
@@ -586,6 +602,19 @@ export default function Home() {
                 }`}
               >
                 HISTORICAL DATA
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setViewMode('settings')}
+                className={`h-6 text-[10px] px-3 rounded ${
+                  viewMode === 'settings'
+                    ? 'bg-orange-500 text-black hover:bg-orange-600'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <Settings className="w-3 h-3 mr-1" />
+                SETTINGS
               </Button>
             </div>
           </div>
@@ -702,27 +731,27 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Crawleo API Key for AOD page fetching */}
+                  {/* API Key Status Indicator */}
                   <div className="flex items-center gap-2">
-                    <div className="flex-1 relative">
-                      <div className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600">
-                        <Shield className="w-3 h-3" />
-                      </div>
-                      <input
-                        type="password"
-                        value={crawleoApiKey}
-                        onChange={(e) => handleApiKeyChange(e.target.value)}
-                        placeholder="Crawleo API Key (required for fetching AOD prices)"
-                        className="w-full bg-[#0a0a0a] border border-[#2a2a2a] text-gray-200 placeholder-gray-600 text-[10px] font-mono pl-8 pr-3 py-1.5 rounded-md focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 focus:outline-none"
-                      />
-                    </div>
                     {crawleoApiKey ? (
-                      <span className="text-[9px] text-green-400 shrink-0 flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" /> API
+                      <span className="text-[10px] text-green-400 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3 h-3" /> Crawleo API Key configured
+                        <button
+                          onClick={() => setViewMode('settings')}
+                          className="text-gray-500 hover:text-orange-400 underline ml-1"
+                        >
+                          edit
+                        </button>
                       </span>
                     ) : (
-                      <span className="text-[9px] text-red-500 shrink-0" title="Crawleo API key is required to fetch AOD prices">
-                        NO KEY
+                      <span className="text-[10px] text-red-400 flex items-center gap-1.5">
+                        <XCircle className="w-3 h-3" /> No Crawleo API Key —
+                        <button
+                          onClick={() => setViewMode('settings')}
+                          className="text-orange-400 hover:text-orange-300 underline"
+                        >
+                          configure now
+                        </button>
                       </span>
                     )}
                   </div>
@@ -1214,6 +1243,147 @@ export default function Home() {
                     </table>
                   </div>
                 )}
+              </section>
+            </>
+          )}
+
+          {/* ═══════════════════════════════════════════════════════════
+              SETTINGS / API CONFIG VIEW
+          ═══════════════════════════════════════════════════════════ */}
+          {viewMode === 'settings' && (
+            <>
+              {/* ── CRAWLEO API KEY ── */}
+              <section className="bg-[#111111] rounded-lg border border-[#1a1a1a] overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-3 border-b border-[#1a1a1a]">
+                  <Shield className="w-4 h-4 text-orange-400" />
+                  <h2 className="text-xs font-bold tracking-wider">CRAWLEO API KEY</h2>
+                  {crawleoApiKey && !apiKeySaved && (
+                    <span className="text-[9px] text-green-400 flex items-center gap-1 ml-2">
+                      <CheckCircle2 className="w-3 h-3" /> Active
+                    </span>
+                  )}
+                  {apiKeySaved && (
+                    <span className="text-[9px] text-green-300 flex items-center gap-1 ml-2 animate-pulse">
+                      <CheckCircle2 className="w-3 h-3" /> Saved!
+                    </span>
+                  )}
+                </div>
+                <div className="p-5 space-y-4">
+                  <p className="text-xs text-gray-400">
+                    The Crawleo API key is required to fetch Amazon AOD (All Offers Display) pages. 
+                    Your key is saved in your browser's local storage and persists across sessions.
+                  </p>
+                  <div className="space-y-2">
+                    <label className="text-[10px] text-gray-500 uppercase tracking-wider">API Key</label>
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 relative">
+                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-600">
+                          <Shield className="w-3.5 h-3.5" />
+                        </div>
+                        <input
+                          type="password"
+                          value={apiKeyDraft}
+                          onChange={(e) => setApiKeyDraft(e.target.value)}
+                          placeholder="sk_xxxxxxxx_xxxxxxxxxxxxxxxx"
+                          className="w-full bg-[#0a0a0a] border border-[#2a2a2a] text-gray-200 placeholder-gray-600 text-xs font-mono pl-9 pr-3 py-2.5 rounded-md focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 focus:outline-none"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleSaveApiKey()
+                          }}
+                        />
+                      </div>
+                      <Button
+                        onClick={handleSaveApiKey}
+                        className="bg-orange-500 hover:bg-orange-600 text-black font-bold text-xs h-10 px-5 shrink-0"
+                        disabled={apiKeyDraft.trim() === crawleoApiKey}
+                      >
+                        {apiKeySaved ? (
+                          <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
+                        ) : null}
+                        {apiKeySaved ? 'SAVED' : 'SAVE KEY'}
+                      </Button>
+                    </div>
+                    {apiKeyDraft && (
+                      <p className="text-[10px] text-gray-600">
+                        Key: {apiKeyDraft.slice(0, 8)}{'•'.repeat(20)}{apiKeyDraft.slice(-4)}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="border-t border-[#1a1a1a] pt-4">
+                    <h3 className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">How to get your API key</h3>
+                    <ol className="text-xs text-gray-500 space-y-1.5 list-decimal ml-4">
+                      <li>Visit <a href="https://crawleo.dev" target="_blank" rel="noopener noreferrer" className="text-orange-400 hover:underline">crawleo.dev</a> and sign up</li>
+                      <li>Go to your dashboard and copy your API key</li>
+                      <li>Paste it above and click <strong className="text-gray-300">Save Key</strong></li>
+                    </ol>
+                  </div>
+
+                  <div className="flex items-center gap-3 border-t border-[#1a1a1a] pt-4">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="bg-transparent border-[#2a2a2a] text-gray-400 hover:text-gray-200 hover:border-[#3a3a3a] text-[10px] h-7"
+                      onClick={() => {
+                        setApiKeyDraft('')
+                        setCrawleoApiKey('')
+                        localStorage.removeItem('crawleo_api_key')
+                        toast({ title: 'API Key Cleared', description: 'Key removed from storage' })
+                      }}
+                    >
+                      <Trash2 className="w-3 h-3 mr-1.5" />
+                      CLEAR KEY
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="bg-transparent border-[#2a2a2a] text-gray-400 hover:text-gray-200 hover:border-[#3a3a3a] text-[10px] h-7"
+                      onClick={() => setViewMode('live')}
+                    >
+                      ← BACK TO LIVE MONITOR
+                    </Button>
+                  </div>
+                </div>
+              </section>
+
+              {/* ── SUPABASE STATUS ── */}
+              <section className="bg-[#111111] rounded-lg border border-[#1a1a1a] overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-3 border-b border-[#1a1a1a]">
+                  <Database className="w-4 h-4 text-orange-400" />
+                  <h2 className="text-xs font-bold tracking-wider">SUPABASE CONNECTION</h2>
+                </div>
+                <div className="p-5 space-y-3">
+                  <div className="flex items-center gap-3">
+                    <span className={`w-2 h-2 rounded-full ${dbSetupNeeded ? 'bg-red-500' : 'bg-green-500'}`} />
+                    <span className={`text-xs ${dbSetupNeeded ? 'text-red-400' : 'text-green-400'}`}>
+                      {dbSetupNeeded ? 'Tables not found — setup required' : 'Connected — tables ready'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Supabase URL: <code className="text-gray-400 text-[10px]">vrnpfmuzpvycewbuikxj.supabase.co</code>
+                  </p>
+                  <p className="text-[10px] text-gray-600">
+                    Database credentials are configured via environment variables and are not exposed in the UI.
+                  </p>
+                </div>
+              </section>
+
+              {/* ── REGIONS INFO ── */}
+              <section className="bg-[#111111] rounded-lg border border-[#1a1a1a] overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-3 border-b border-[#1a1a1a]">
+                  <Globe className="w-4 h-4 text-orange-400" />
+                  <h2 className="text-xs font-bold tracking-wider">ACTIVE REGIONS</h2>
+                </div>
+                <div className="p-5">
+                  <div className="grid grid-cols-5 gap-3">
+                    {REGIONS.map((r) => (
+                      <div key={r.key} className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-md p-3 text-center">
+                        <div className="text-2xl mb-1">{r.flag}</div>
+                        <div className="text-xs text-gray-300 font-bold">{r.short}</div>
+                        <div className="text-[10px] text-gray-600">{r.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </section>
             </>
           )}
