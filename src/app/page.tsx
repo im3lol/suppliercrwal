@@ -731,31 +731,6 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* API Key Status Indicator */}
-                  <div className="flex items-center gap-2">
-                    {crawleoApiKey ? (
-                      <span className="text-[10px] text-green-400 flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3 h-3" /> Crawleo API Key configured
-                        <button
-                          onClick={() => setViewMode('settings')}
-                          className="text-gray-500 hover:text-orange-400 underline ml-1"
-                        >
-                          edit
-                        </button>
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-red-400 flex items-center gap-1.5">
-                        <XCircle className="w-3 h-3" /> No Crawleo API Key —
-                        <button
-                          onClick={() => setViewMode('settings')}
-                          className="text-orange-400 hover:text-orange-300 underline"
-                        >
-                          configure now
-                        </button>
-                      </span>
-                    )}
-                  </div>
-
                   <div className="flex items-center gap-3">
                     <Button
                       onClick={handleBulkCrawl}
