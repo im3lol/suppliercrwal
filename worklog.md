@@ -197,3 +197,41 @@ Stage Summary:
 - Euro format parsing (9,49 € → 9.49)
 - Sequential region processing to avoid browser conflicts
 - All 5 regions working with correct currency detection
+
+---
+Task ID: 7
+Agent: Main Agent
+Task: Replace agent-browser crawler with Scrapling-based AOD AJAX scraper
+
+Work Log:
+- User reported agent-browser returned wrong prices for USA and Germany on both products
+- User explicitly requested using Scrapling library with AOD AJAX endpoint URL pattern
+- Created Python scraping script: mini-services/scrapling-service/scrape.py
+  - Uses Scrapling Fetcher (fast HTTP) with StealthyFetcher fallback
+  - Fetches AOD AJAX URL: https://www.amazon.{region}/gp/product/ajax/aodAjaxMain/?asin={ASIN}
+  - Sets currency cookies (i18n-prefs=EUR/USD/etc.) for correct currency display
+  - Extracts prices from accessibility label (span.aok-offscreen.apex-pricetopay-accessibility-label) — most reliable
+  - Fallback to visual price parts (span.a-price-symbol + span.a-price-whole + span.a-price-fraction)
+  - Arabic numeral conversion for EG/SA/AE regions
+  - Returns JSON with domain, region, name, image, price, currency, priceDisplay, asin, error
+- Rewrote src/lib/aod-crawler.ts to call Python script via child_process.execFile
+  - Removed all agent-browser dependencies
+  - Uses subprocess call to python3 scrape.py <ASIN> <REGION>
+  - Parses JSON output from Python script
+  - 90 second timeout for subprocess
+- Updated src/app/api/crawl/route.ts to import from new aod-crawler.ts
+- Tested all 5 regions for B0DJSW6BDG:
+  - COM: N/A (not on US Amazon) ✅
+  - DE: €8.93 ✅
+  - EG: N/A (not on Egyptian Amazon) ✅
+  - SA: SAR 113.38 ✅
+  - AE: AED 76.38 ✅
+- Tested B0725CQ787 on COM: $20.25 ✅
+
+Stage Summary:
+- Replaced agent-browser with Scrapling library for reliable AOD price extraction
+- Uses AOD AJAX endpoint (/gp/product/ajax/aodAjaxMain/) — lighter than full product page
+- Price extraction uses accessibility labels (most reliable selector)
+- All 5 regions work correctly with proper currency detection
+- AOD-only enforcement: if no offers → N/A
+- Subprocess approach (python3 scrape.py) instead of HTTP microservice (more reliable)

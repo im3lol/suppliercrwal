@@ -1,18 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { crawlRegion, REGIONS } from '@/lib/browser-crawler'
-import type { CrawlResult } from '@/lib/browser-crawler'
+import { crawlRegion, REGIONS } from '@/lib/aod-crawler'
+import type { CrawlResult } from '@/lib/aod-crawler'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // AOD CRAWLER API
 //
 // Two modes:
-// 1. { asin, asins, regions }: Crawl ASIN(s) via agent-browser, save results
+// 1. { asin, asins, regions }: Crawl ASIN(s) via Scrapling service, save results
 // 2. { asin, results }: Save pre-crawled results to DB (from frontend)
 //
-// Uses agent-browser CLI to scrape real Amazon AOD prices.
+// Uses Scrapling Python service to scrape real Amazon AOD prices.
 // Prices come from AOD ONLY. If AOD has no offers → return N/A.
-// Regions are processed SEQUENTIALLY to avoid browser conflicts.
+// Regions are processed SEQUENTIALLY with delays to avoid rate limits.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 interface CrawlResultItem {
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
       return await saveResults(asin, preCrawledResults)
     }
 
-    // ── Mode 1: Trigger crawl via browser-crawler ──
+    // ── Mode 1: Trigger crawl via Scrapling service ──
     const asinList: string[] = asins || (asin ? [asin] : [])
     const regionKeys: string[] = regions || Object.keys(REGIONS)
 
@@ -65,6 +65,11 @@ export async function POST(request: NextRequest) {
         const result = await crawlRegion(cleanAsin, regionKey)
         crawlResults.push(result)
         console.log(`[Crawl API] ${cleanAsin} on ${regionKey}: price=${result.price} display=${result.priceDisplay}`)
+
+        // Small delay between regions
+        if (regionKeys.indexOf(regionKey) < regionKeys.length - 1) {
+          await new Promise((r) => setTimeout(r, 500))
+        }
       }
 
       // Save results to DB
