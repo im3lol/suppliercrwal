@@ -72,6 +72,7 @@ export default function Home() {
   const [crawlLog, setCrawlLog] = useState<LogEntry[]>([])
   const [crawlCurrent, setCrawlCurrent] = useState(0)
   const [crawlTotal, setCrawlTotal] = useState(0)
+  const [scrapeDoToken, setScrapeDoToken] = useState('')
   const abortRef = useRef(false)
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -82,6 +83,18 @@ export default function Home() {
   const [historySelectedIds, setHistorySelectedIds] = useState<Set<string>>(new Set())
 
   const { toast } = useToast()
+
+  // Load scrape.do token from localStorage
+  useEffect(() => {
+    const savedToken = localStorage.getItem('scrape_do_token') || ''
+    setScrapeDoToken(savedToken)
+  }, [])
+
+  // Save token to localStorage when it changes
+  const handleTokenChange = (token: string) => {
+    setScrapeDoToken(token)
+    localStorage.setItem('scrape_do_token', token)
+  }
 
   // Update clock
   useEffect(() => {
@@ -212,7 +225,7 @@ export default function Home() {
           const res = await fetch('/api/crawl', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ asins: [asin], regions: [regionKey] }),
+            body: JSON.stringify({ asins: [asin], regions: [regionKey], scrapeDoToken: scrapeDoToken || undefined }),
           })
 
           const data = await res.json()
@@ -581,6 +594,31 @@ export default function Home() {
                         .filter((s) => /^[A-Z0-9]{10}$/i.test(s.trim())).length}{' '}
                       valid ASINs
                     </div>
+                  </div>
+
+                  {/* scrape.do Token for geo-based prices */}
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 relative">
+                      <div className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600">
+                        <Shield className="w-3 h-3" />
+                      </div>
+                      <input
+                        type="password"
+                        value={scrapeDoToken}
+                        onChange={(e) => handleTokenChange(e.target.value)}
+                        placeholder="scrape.do API Token (for correct geo-based prices)"
+                        className="w-full bg-[#0a0a0a] border border-[#2a2a2a] text-gray-200 placeholder-gray-600 text-[10px] font-mono pl-8 pr-3 py-1.5 rounded-md focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 focus:outline-none"
+                      />
+                    </div>
+                    {scrapeDoToken ? (
+                      <span className="text-[9px] text-green-400 shrink-0 flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> GEO
+                      </span>
+                    ) : (
+                      <span className="text-[9px] text-yellow-500 shrink-0" title="Without scrape.do token, prices may differ by server IP location">
+                        NO GEO
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-3">

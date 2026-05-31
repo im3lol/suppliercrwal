@@ -235,3 +235,29 @@ Stage Summary:
 - All 5 regions work correctly with proper currency detection
 - AOD-only enforcement: if no offers → N/A
 - Subprocess approach (python3 scrape.py) instead of HTTP microservice (more reliable)
+---
+Task ID: 8
+Agent: Main Agent
+Task: Fix price discrepancy — add scrape.do geoCode support for correct regional prices
+
+Work Log:
+- User confirmed correct price is €10.63 (not €8.93) for B0DJSW6BDG on Amazon.de
+- Diagnosed root cause: server is in Hong Kong, Amazon returns different prices based on IP geolocation
+- Tested Scrapling Fetcher, StealthyFetcher, and direct Playwright — all return €8.93 from HK IP
+- Tested with German locale, timezone, geolocation, cookies — still €8.93 (Amazon uses IP, not browser settings)
+- Implemented scrape.do API integration in Python script (as per user's example code)
+  - Uses geoCode parameter to route requests through target country IP
+  - DE → geoCode=de, COM → geoCode=us, EG → geoCode=eg, SA → geoCode=sa, AE → geoCode=ae
+  - Falls back to Scrapling Fetcher if no token or if scrape.do fails
+- Added SCRAPE_DO_TOKEN environment variable support
+- Added scrape.do token input field in dashboard UI (stored in localStorage)
+  - Shows "GEO" badge when token is active, "NO GEO" warning when not set
+- Updated API route to pass scrapeDoToken from frontend to Python script
+- Updated aod-crawler.ts to accept and pass scrapeDoToken as env var to subprocess
+
+Stage Summary:
+- Price discrepancy caused by server IP geolocation (HK vs Germany)
+- scrape.do API with geoCode solves this by routing requests through target country
+- User needs to add their scrape.do token in the dashboard to get correct prices
+- Without token, Scrapling Fetcher is used (prices may differ by IP)
+- Token is stored in browser localStorage and passed with each crawl request

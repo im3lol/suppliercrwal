@@ -30,7 +30,7 @@ interface CrawlResultItem {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { asin, asins, regions, results: preCrawledResults } = body
+    const { asin, asins, regions, results: preCrawledResults, scrapeDoToken } = body
 
     // ── Mode 2: Save pre-crawled results directly ──
     if (preCrawledResults && Array.isArray(preCrawledResults) && asin) {
@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
 
       for (const regionKey of regionKeys) {
         console.log(`[Crawl API] Crawling ${cleanAsin} on ${regionKey}...`)
-        const result = await crawlRegion(cleanAsin, regionKey)
+        const result = await crawlRegion(cleanAsin, regionKey, scrapeDoToken)
         crawlResults.push(result)
         console.log(`[Crawl API] ${cleanAsin} on ${regionKey}: price=${result.price} display=${result.priceDisplay}`)
 

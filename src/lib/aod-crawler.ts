@@ -100,7 +100,8 @@ export interface CrawlResult {
  */
 export async function crawlRegion(
   asin: string,
-  regionKey: string
+  regionKey: string,
+  scrapeDoToken?: string
 ): Promise<CrawlResult> {
   const region = REGIONS[regionKey]
   if (!region) {
@@ -132,11 +133,16 @@ export async function crawlRegion(
     console.log(`[crawlRegion] Scraping ${asin} on ${region.domain} via Scrapling...`)
 
     // Call the Python Scrapling script
+    // Pass SCRAPE_DO_TOKEN env var for geolocation-based fetching
+    const env = { ...process.env }
+    if (scrapeDoToken) {
+      env.SCRAPE_DO_TOKEN = scrapeDoToken
+    }
     const result = await new Promise<CrawlResult>((resolve) => {
       execFile(
         'python3',
         [SCRAPE_SCRIPT, asin, regionKey],
-        { timeout: 90000, maxBuffer: 10 * 1024 * 1024 },
+        { timeout: 90000, maxBuffer: 10 * 1024 * 1024, env },
         (error, stdout, stderr) => {
           if (error && !stdout) {
             console.error(`[crawlRegion] Scrapling script error: ${error.message}`)
@@ -199,12 +205,13 @@ export async function crawlRegion(
  */
 export async function crawlAsin(
   asin: string,
-  regionKeys: string[] = Object.keys(REGIONS)
+  regionKeys: string[] = Object.keys(REGIONS),
+  scrapeDoToken?: string
 ): Promise<CrawlResult[]> {
   const results: CrawlResult[] = []
 
   for (const key of regionKeys) {
-    const result = await crawlRegion(asin, key)
+    const result = await crawlRegion(asin, key, scrapeDoToken)
     results.push(result)
 
     // Small delay between regions to avoid rate limiting

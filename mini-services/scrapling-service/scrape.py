@@ -7,7 +7,10 @@ Called via subprocess from Next.js.
 Usage:
   python3 scrape.py <ASIN> <REGION>
 
-Returns JSON to stdout with price data.
+Uses scrape.do API with geoCode for correct geolocation-based prices,
+then parses the HTML with Scrapling for reliable extraction.
+
+If no SCRAPE_DO_TOKEN env var is set, falls back to Scrapling Fetcher.
 
 CRITICAL RULES:
 - Prices MUST come from AOD AJAX endpoint ONLY
@@ -16,20 +19,23 @@ CRITICAL RULES:
 """
 
 import re
+import os
 import sys
 import json
+import requests as req_lib
 from scrapling import Fetcher, StealthyFetcher
+from scrapling.parser import Adaptor
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # REGION CONFIG
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 REGIONS = {
-    "COM": {"domain": "amazon.com",  "currency": "USD", "postal_code": "99950", "currency_cookie": "USD"},
-    "EG":  {"domain": "amazon.eg",   "currency": "EGP", "currency_cookie": "EGP"},
-    "DE":  {"domain": "amazon.de",   "currency": "EUR", "postal_code": "80331", "currency_cookie": "EUR"},
-    "SA":  {"domain": "amazon.sa",   "currency": "SAR", "currency_cookie": "SAR"},
-    "AE":  {"domain": "amazon.ae",   "currency": "AED", "currency_cookie": "AED"},
+    "COM": {"domain": "amazon.com",  "currency": "USD", "postal_code": "99950", "currency_cookie": "USD", "geo_code": "us"},
+    "EG":  {"domain": "amazon.eg",   "currency": "EGP", "currency_cookie": "EGP", "geo_code": "eg"},
+    "DE":  {"domain": "amazon.de",   "currency": "EUR", "postal_code": "80331", "currency_cookie": "EUR", "geo_code": "de"},
+    "SA":  {"domain": "amazon.sa",   "currency": "SAR", "currency_cookie": "SAR", "geo_code": "sa"},
+    "AE":  {"domain": "amazon.ae",   "currency": "AED", "currency_cookie": "AED", "geo_code": "ae"},
 }
 
 CURRENCY_SYMBOLS = {
@@ -111,6 +117,14 @@ def parse_price_from_text(text: str, default_currency: str) -> dict | None:
     elif "HKD" in text:
         currency = default_currency
 
+    # Handle German format: "8,93 €" → 8.93
+    if currency == "EUR":
+        euro_match = re.search(r'([\d]+(?:\.\d{3})*),(\d{2})\s*\u20ac', text)
+        if euro_match:
+            whole = euro_match.group(1).replace(".", "")
+            frac = euro_match.group(2)
+            return {"price": f"{whole}.{frac}", "currency": "EUR"}
+
     match = re.search(
         r'(?:[\$\u20ac\u00a3]|EGP|SAR|AED|USD|EUR|HKD)\s*([\d,]+\.?\d*)',
         text
@@ -136,10 +150,15 @@ def parse_price_from_text(text: str, default_currency: str) -> dict | None:
     return None
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# AOD HTML PARSING
+# AOD HTML PARSING (Using Scrapling Adaptor)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def parse_aod_response(page, region_key: str, asin: str) -> dict:
+def parse_aod_html(html_text: str, region_key: str, asin: str) -> dict:
+    """
+    Parse AOD AJAX HTML using Scrapling's Adaptor.
+    This is the core parser that works with HTML from any source
+    (scrape.do, Fetcher, StealthyFetcher, etc.)
+    """
     region = REGIONS.get(region_key, REGIONS["COM"])
     default_currency = region["currency"]
 
@@ -155,16 +174,17 @@ def parse_aod_response(page, region_key: str, asin: str) -> dict:
         "error": None,
     }
 
-    if page is None:
-        result["error"] = "No response from Amazon"
+    if not html_text:
+        result["error"] = "Empty HTML response"
         return result
+
+    page = Adaptor(html_text)
 
     # Check for no-offer indicators
     no_offers_el = page.css('#aod-asin-no-offers')
     if no_offers_el:
         return result
 
-    html_text = str(page.html_content) if hasattr(page, 'html_content') else str(page)
     html_lower = html_text.lower()
     for phrase in NO_OFFER_PHRASES:
         if phrase in html_lower:
@@ -193,7 +213,12 @@ def parse_aod_response(page, region_key: str, asin: str) -> dict:
                 result["image"] = src
                 break
 
-    # Extract price from AOD
+    # ── Extract price from AOD ──
+    # Strategy priority:
+    # 1. #aod-price-0 accessibility label (MOST RELIABLE - contains clean price)
+    # 2. #aod-price-0 visual parts (symbol + whole + fraction)
+    # 3. #aod-price-1 (first offer in list)
+    # 4. #aod-offer-list any price
     extracted_price = None
     extracted_currency = default_currency
 
@@ -211,6 +236,7 @@ def parse_aod_response(page, region_key: str, asin: str) -> dict:
 
     if price_container:
         # Method 1: Accessibility label (MOST RELIABLE)
+        # Contains clean price like "€10.63 with 24 percent savings" or "8,93 € mit 24 Prozent Einsparungen"
         acc_labels = price_container.css('span.aok-offscreen.apex-pricetopay-accessibility-label')
         if acc_labels:
             acc_text = acc_labels[0].text.strip() if hasattr(acc_labels[0], 'text') else ""
@@ -219,6 +245,7 @@ def parse_aod_response(page, region_key: str, asin: str) -> dict:
                 if parsed:
                     extracted_price = parsed["price"]
                     extracted_currency = parsed["currency"]
+                    print(f"[Parse] Price from accessibility label: {extracted_price} {extracted_currency} (text: {acc_text[:80]})", file=sys.stderr)
 
         # Method 2: Visual price parts (symbol + whole + fraction)
         if not extracted_price:
@@ -236,6 +263,7 @@ def parse_aod_response(page, region_key: str, asin: str) -> dict:
 
                     whole_text = convert_arabic_numerals(whole_text)
                     fraction_text = convert_arabic_numerals(fraction_text)
+                    # Strip trailing decimal/dot from whole part
                     whole_clean = re.sub(r'[.,]$', '', whole_text)
                     fraction_clean = fraction_text.strip()
 
@@ -246,6 +274,7 @@ def parse_aod_response(page, region_key: str, asin: str) -> dict:
                                 extracted_price = f"{whole_clean}.{fraction_clean}"
                                 if symbol_text:
                                     extracted_currency = detect_currency(symbol_text, default_currency)
+                                print(f"[Parse] Price from visual parts: {extracted_price} {extracted_currency} (symbol={symbol_text}, whole={whole_text}, frac={fraction_text})", file=sys.stderr)
                         except ValueError:
                             pass
 
@@ -259,6 +288,7 @@ def parse_aod_response(page, region_key: str, asin: str) -> dict:
                     if parsed:
                         extracted_price = parsed["price"]
                         extracted_currency = parsed["currency"]
+                        print(f"[Parse] Price from offscreen: {extracted_price} {extracted_currency} (text: {offscreen_text[:80]})", file=sys.stderr)
 
     # Method 4: Try #aod-offer-list directly
     if not extracted_price:
@@ -316,7 +346,7 @@ def parse_aod_response(page, region_key: str, asin: str) -> dict:
     return result
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# FETCH AOD PAGE
+# FETCH AOD PAGE — scrape.do API with geoCode
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def build_aod_url(asin: str, region_key: str) -> str:
@@ -327,13 +357,44 @@ def build_aod_url(asin: str, region_key: str) -> str:
         url += f"&pc={region['postal_code']}"
     return url
 
-def fetch_aod(url: str, region_key: str) -> object | None:
-    """Fetch AOD page using Scrapling Fetcher first, StealthyFetcher as fallback."""
+
+def fetch_with_scrape_do(url: str, region_key: str) -> str | None:
+    """
+    Fetch AOD page using scrape.do API with geoCode.
+    This routes the request through a proxy in the target country,
+    ensuring Amazon returns the correct regional prices.
+    
+    Requires SCRAPE_DO_TOKEN environment variable.
+    """
+    token = os.environ.get("SCRAPE_DO_TOKEN", "")
+    if not token:
+        return None
+    
+    region = REGIONS.get(region_key, REGIONS["COM"])
+    geo_code = region.get("geo_code", "us")
+    
+    api_url = f"https://api.scrape.do/?token={token}&url={req_lib.utils.quote(url, safe='')}&geoCode={geo_code}"
+    
+    try:
+        print(f"[scrape.do] Fetching via {geo_code} proxy: {url}", file=sys.stderr)
+        response = req_lib.get(api_url, timeout=60)
+        if response.status_code == 200:
+            print(f"[scrape.do] Success! Length: {len(response.text)}", file=sys.stderr)
+            return response.text
+        else:
+            print(f"[scrape.do] Failed with status {response.status_code}", file=sys.stderr)
+            return None
+    except Exception as e:
+        print(f"[scrape.do] Error: {e}", file=sys.stderr)
+        return None
+
+
+def fetch_with_fetcher(url: str, region_key: str) -> str | None:
+    """Fetch AOD page using Scrapling Fetcher (basic HTTP with anti-bot)."""
     region = REGIONS.get(region_key, REGIONS["COM"])
     domain = region["domain"]
     currency_cookie = region.get("currency_cookie", region["currency"])
 
-    # Try Fetcher first (faster, no browser needed)
     try:
         fetcher = Fetcher()
         page = fetcher.get(
@@ -348,11 +409,18 @@ def fetch_aod(url: str, region_key: str) -> object | None:
             timeout=30,
         )
         if page and page.status == 200:
-            return page
+            html = str(page.html_content) if hasattr(page, 'html_content') else str(page)
+            print(f"[Fetcher] Success! Length: {len(html)}", file=sys.stderr)
+            return html
+        print(f"[Fetcher] Status {page.status} for {url}", file=sys.stderr)
+        return None
     except Exception as e:
         print(f"[Fetcher] Error: {e}", file=sys.stderr)
+        return None
 
-    # Fallback: StealthyFetcher (uses Playwright with stealth)
+
+def fetch_with_stealth(url: str, region_key: str) -> str | None:
+    """Fetch AOD page using Scrapling StealthyFetcher (Playwright with stealth)."""
     try:
         page = StealthyFetcher.fetch(
             url,
@@ -361,10 +429,40 @@ def fetch_aod(url: str, region_key: str) -> object | None:
             timeout=60000,
         )
         if page and page.status == 200:
-            return page
+            html = str(page.html_content) if hasattr(page, 'html_content') else str(page)
+            print(f"[StealthyFetcher] Success! Length: {len(html)}", file=sys.stderr)
+            return html
+        print(f"[StealthyFetcher] Status {page.status} for {url}", file=sys.stderr)
+        return None
     except Exception as e:
         print(f"[StealthyFetcher] Error: {e}", file=sys.stderr)
+        return None
 
+
+def fetch_aod(url: str, region_key: str) -> str | None:
+    """
+    Fetch AOD page HTML using the best available method.
+    
+    Priority:
+    1. scrape.do API with geoCode (correct geolocation → correct prices)
+    2. Scrapling Fetcher (fast, but may get IP-based different prices)
+    3. Scrapling StealthyFetcher (slower, Playwright-based)
+    """
+    # Try scrape.do first (correct geolocation)
+    html = fetch_with_scrape_do(url, region_key)
+    if html:
+        return html
+    
+    # Fall back to Scrapling Fetcher
+    html = fetch_with_fetcher(url, region_key)
+    if html:
+        return html
+    
+    # Last resort: StealthyFetcher
+    html = fetch_with_stealth(url, region_key)
+    if html:
+        return html
+    
     return None
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -388,11 +486,18 @@ if __name__ == "__main__":
         sys.exit(1)
 
     url = build_aod_url(asin, region_key)
-    print(f"Fetching AOD: {url}", file=sys.stderr)
+    print(f"[Scrape] Fetching AOD for {asin} on {region_key}: {url}", file=sys.stderr)
 
-    page = fetch_aod(url, region_key)
+    # Check if scrape.do token is available
+    scrape_do_token = os.environ.get("SCRAPE_DO_TOKEN", "")
+    if scrape_do_token:
+        print(f"[Scrape] Using scrape.do API with geoCode={REGIONS[region_key].get('geo_code', 'us')}", file=sys.stderr)
+    else:
+        print(f"[Scrape] No SCRAPE_DO_TOKEN set, using Scrapling Fetcher (prices may differ by IP geolocation)", file=sys.stderr)
 
-    if page is None:
+    html = fetch_aod(url, region_key)
+
+    if html is None:
         region = REGIONS[region_key]
         print(json.dumps({
             "domain": region["domain"],
@@ -407,5 +512,7 @@ if __name__ == "__main__":
         }))
         sys.exit(0)
 
-    result = parse_aod_response(page, region_key, asin)
+    # Parse HTML with Scrapling Adaptor
+    result = parse_aod_html(html, region_key, asin)
+    print(f"[Scrape] Result for {asin} on {region_key}: price={result['price']} display={result['priceDisplay']}", file=sys.stderr)
     print(json.dumps(result))
