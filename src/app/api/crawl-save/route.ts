@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import {
+  findProductByAsin,
+  createProduct,
+  updateProduct,
+  upsertPrice,
+} from '@/lib/db-supabase'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWL SAVE API — Saves crawl results from the frontend to the DB
-//
-// The frontend calls the crawl microservice directly (port 3003),
-// then sends the results here to be persisted.
+// CRAWL SAVE API — Saves crawl results from the frontend to Supabase
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 interface CrawlResultItem {
@@ -31,8 +33,8 @@ export async function POST(request: NextRequest) {
 
     const cleanAsin = asin.trim().toUpperCase()
 
-    // Upsert product
-    let product = await db.product.findUnique({ where: { asin: cleanAsin } })
+    // Find existing product
+    let product = await findProductByAsin(cleanAsin)
 
     const bestResult = results.find(
       (r) =>
@@ -43,46 +45,32 @@ export async function POST(request: NextRequest) {
     ) || results.find((r) => r.name && r.name !== `Product ${cleanAsin}`) || results[0]
 
     if (!product) {
-      product = await db.product.create({
-        data: {
-          asin: cleanAsin,
-          name: bestResult?.name || `Product ${cleanAsin}`,
-          image: bestResult?.image || '',
-        },
-      })
+      product = await createProduct(
+        cleanAsin,
+        bestResult?.name || `Product ${cleanAsin}`,
+        bestResult?.image || ''
+      )
     } else {
       if (bestResult?.name && bestResult.name !== `Product ${cleanAsin}`) {
-        await db.product.update({
-          where: { id: product.id },
-          data: {
-            name: bestResult.name,
-            image: bestResult.image || product.image,
-            updatedAt: new Date(),
-          },
-        })
+        await updateProduct(
+          product.id,
+          bestResult.name,
+          bestResult.image || product.image
+        )
       }
     }
 
     // Upsert prices
     for (const result of results) {
       if (!result.domain) continue
-      await db.price.upsert({
-        where: { productId_domain: { productId: product.id, domain: result.domain } },
-        create: {
-          productId: product.id,
-          domain: result.domain,
-          region: result.region,
-          price: result.price,
-          currency: result.currency,
-          priceDisplay: result.priceDisplay,
-        },
-        update: {
-          price: result.price,
-          currency: result.currency,
-          priceDisplay: result.priceDisplay,
-          updatedAt: new Date(),
-        },
-      })
+      await upsertPrice(
+        product.id,
+        result.domain,
+        result.region,
+        result.price,
+        result.currency,
+        result.priceDisplay
+      )
     }
 
     return NextResponse.json({ success: true, asin: cleanAsin })

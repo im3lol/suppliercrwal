@@ -1,18 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
 import { crawlRegion } from '@/lib/aod-crawler'
+import {
+  findProductByAsin,
+  createProduct,
+  updateProduct,
+  upsertPrice,
+} from '@/lib/db-supabase'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// AOD CRAWLER API — Pure TypeScript (no Python subprocess)
+// AOD CRAWLER API — Pure TypeScript + Supabase
 //
 // Crawl ASIN on a single region via Crawleo API directly.
 // Uses aod-crawler.ts which calls Crawleo API and parses AOD HTML.
+// Results are saved to Supabase (PostgreSQL).
 //
 // CRITICAL RULES:
 // - Prices come from AOD ONLY (All Offers Display)
 // - If AOD has no offers → return N/A
-//
-// This route is fully compatible with Vercel/GitHub/Supabase deployment.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export const maxDuration = 60
@@ -51,7 +55,7 @@ export async function POST(request: NextRequest) {
     // Call TypeScript crawler directly — no Python subprocess needed!
     const result: CrawlResultItem = await crawlRegion(cleanAsin, regionKey, crawleoApiKey)
 
-    // Save to DB
+    // Save to Supabase
     await saveResultsToDB(cleanAsin, [result])
 
     console.log(`[Crawl API] ${cleanAsin} on ${regionKey}: price=${result.price} display=${result.priceDisplay}`)
@@ -70,7 +74,8 @@ export async function POST(request: NextRequest) {
 async function saveResultsToDB(asin: string, crawlResults: CrawlResultItem[]) {
   const cleanAsin = asin.trim().toUpperCase()
 
-  let product = await db.product.findUnique({ where: { asin: cleanAsin } })
+  // Find existing product
+  let product = await findProductByAsin(cleanAsin)
 
   const bestResult = crawlResults.find(
     (r) => r.name && r.name !== `Product ${cleanAsin}` &&
@@ -79,28 +84,33 @@ async function saveResultsToDB(asin: string, crawlResults: CrawlResultItem[]) {
   ) || crawlResults.find((r) => r.name && r.name !== `Product ${cleanAsin}`) || crawlResults[0]
 
   if (!product) {
-    product = await db.product.create({
-      data: {
-        asin: cleanAsin,
-        name: bestResult?.name || `Product ${cleanAsin}`,
-        image: bestResult?.image || '',
-      },
-    })
+    // Create new product
+    product = await createProduct(
+      cleanAsin,
+      bestResult?.name || `Product ${cleanAsin}`,
+      bestResult?.image || ''
+    )
   } else {
+    // Update existing product if we have better data
     if (bestResult?.name && bestResult.name !== `Product ${cleanAsin}`) {
-      await db.product.update({
-        where: { id: product.id },
-        data: { name: bestResult.name, image: bestResult.image || product.image, updatedAt: new Date() },
-      })
+      await updateProduct(
+        product.id,
+        bestResult.name,
+        bestResult.image || product.image
+      )
     }
   }
 
+  // Upsert prices for each region result
   for (const result of crawlResults) {
     if (!result.domain) continue
-    await db.price.upsert({
-      where: { productId_domain: { productId: product.id, domain: result.domain } },
-      create: { productId: product.id, domain: result.domain, region: result.region, price: result.price, currency: result.currency, priceDisplay: result.priceDisplay },
-      update: { price: result.price, currency: result.currency, priceDisplay: result.priceDisplay, updatedAt: new Date() },
-    })
+    await upsertPrice(
+      product.id,
+      result.domain,
+      result.region,
+      result.price,
+      result.currency,
+      result.priceDisplay
+    )
   }
 }

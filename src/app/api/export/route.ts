@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { getAllProducts } from '@/lib/db-supabase'
 import * as XLSX from 'xlsx'
 
 // GET /api/export — Export products as Excel (.xlsx) or CSV
@@ -8,10 +8,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const format = searchParams.get('format') || 'xlsx' // xlsx or csv
 
-    const products = await db.product.findMany({
-      include: { prices: true },
-      orderBy: { updatedAt: 'desc' },
-    })
+    const products = await getAllProducts()
 
     const regions = ['COM', 'EG', 'DE', 'SA', 'AE']
     const regionDomains: Record<string, string> = {
@@ -37,7 +34,7 @@ export async function GET(request: NextRequest) {
     ]
 
     const summaryRows = products.map((p) => {
-      const priceMap = Object.fromEntries(p.prices.map((pr) => [pr.region, pr]))
+      const priceMap = Object.fromEntries((p.prices || []).map((pr) => [pr.region, pr]))
       const domain = priceMap.COM?.domain || 'amazon.com'
       const link = `https://www.${domain}/dp/${p.asin}/`
 
@@ -51,7 +48,7 @@ export async function GET(request: NextRequest) {
         priceMap.SA?.priceDisplay || 'N/A',
         priceMap.AE?.priceDisplay || 'N/A',
         link,
-        p.updatedAt.toISOString(),
+        p.updatedAt,
       ]
     })
 
@@ -71,7 +68,7 @@ export async function GET(request: NextRequest) {
     const detailRows: (string | number)[][] = []
     for (const p of products) {
       for (const region of regions) {
-        const pr = p.prices.find((x) => x.region === region)
+        const pr = (p.prices || []).find((x) => x.region === region)
         const domain = pr?.domain || regionDomains[region] || ''
         const link = `https://www.${domain}/dp/${p.asin}/`
         detailRows.push([
@@ -83,7 +80,7 @@ export async function GET(request: NextRequest) {
           pr?.currency || '',
           pr?.priceDisplay || 'N/A',
           link,
-          pr?.updatedAt?.toISOString() || '',
+          pr?.updatedAt || '',
         ])
       }
     }

@@ -73,6 +73,9 @@ export default function Home() {
   const [crawlCurrent, setCrawlCurrent] = useState(0)
   const [crawlTotal, setCrawlTotal] = useState(0)
   const [crawleoApiKey, setCrawleoApiKey] = useState('')
+  const [dbSetupNeeded, setDbSetupNeeded] = useState(false)
+  const [setupSql, setSetupSql] = useState('')
+  const [showSetup, setShowSetup] = useState(false)
   const abortRef = useRef(false)
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -134,6 +137,15 @@ export default function Home() {
       if (data.success) {
         setProducts(data.data)
         setTotalScans(data.total)
+        setDbSetupNeeded(false)
+      } else if (data.error && (data.error.includes('Could not find the table') || data.error.includes('does not exist') || data.needsSetup)) {
+        setDbSetupNeeded(true)
+        // Fetch the SQL migration
+        try {
+          const setupRes = await fetch('/api/setup')
+          const setupData = await setupRes.json()
+          if (setupData.sql) setSetupSql(setupData.sql)
+        } catch {}
       }
     } catch (e) {
       console.error('Failed to fetch products:', e)
@@ -581,6 +593,64 @@ export default function Home() {
 
         {/* ── CONTENT ── */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+
+          {/* ── DATABASE SETUP BANNER ── */}
+          {dbSetupNeeded && (
+            <section className="bg-red-500/10 rounded-lg border border-red-500/30 overflow-hidden">
+              <div className="flex items-center gap-2 px-4 py-3 border-b border-red-500/20">
+                <Database className="w-4 h-4 text-red-400" />
+                <h2 className="text-xs font-bold tracking-wider text-red-400">DATABASE SETUP REQUIRED</h2>
+              </div>
+              <div className="p-4 space-y-3">
+                <p className="text-xs text-gray-400">
+                  The Supabase database tables need to be created. Follow these steps:
+                </p>
+                <ol className="text-xs text-gray-400 space-y-1 list-decimal ml-4">
+                  <li>Open the <a href="https://supabase.com/dashboard/project/vrnpfmuzpvycewbuikxj/sql/new" target="_blank" rel="noopener noreferrer" className="text-orange-400 hover:underline">Supabase SQL Editor</a></li>
+                  <li>Click the button below to copy the SQL migration</li>
+                  <li>Paste it in the SQL Editor and click <strong className="text-gray-200">Run</strong></li>
+                  <li>Come back here and click <strong className="text-gray-200">Refresh</strong></li>
+                </ol>
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="bg-transparent border-red-500/50 text-red-400 hover:bg-red-500/10 text-xs h-7"
+                    onClick={() => setShowSetup(!showSetup)}
+                  >
+                    {showSetup ? 'HIDE SQL' : 'SHOW SQL'}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="bg-transparent border-[#2a2a2a] text-gray-400 hover:text-gray-200 hover:border-[#3a3a3a] text-xs h-7"
+                    onClick={() => {
+                      navigator.clipboard.writeText(setupSql)
+                      toast({ title: 'SQL Copied!', description: 'Paste it in the Supabase SQL Editor' })
+                    }}
+                    disabled={!setupSql}
+                  >
+                    <FileText className="w-3 h-3 mr-1.5" />
+                    COPY SQL TO CLIPBOARD
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="bg-transparent border-[#2a2a2a] text-gray-400 hover:text-gray-200 hover:border-[#3a3a3a] text-xs h-7"
+                    onClick={fetchProducts}
+                  >
+                    <RefreshCw className="w-3 h-3 mr-1.5" />
+                    REFRESH
+                  </Button>
+                </div>
+                {showSetup && setupSql && (
+                  <pre className="bg-[#0a0a0a] border border-[#2a2a2a] rounded p-3 text-[10px] text-gray-400 max-h-64 overflow-auto whitespace-pre-wrap">
+                    {setupSql}
+                  </pre>
+                )}
+              </div>
+            </section>
+          )}
 
           {/* ═══════════════════════════════════════════════════════════
               LIVE MONITOR VIEW

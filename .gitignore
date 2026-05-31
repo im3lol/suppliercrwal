@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -52,3 +53,15 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Mini services (no longer needed - Python scraper replaced with TypeScript)
+/mini-services/
+
+# Database files
+/db/
+
+# Prisma (replaced with Supabase)
+/prisma/
+
+# Work log
+worklog.md

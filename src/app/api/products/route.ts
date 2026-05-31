@@ -1,37 +1,46 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import {
+  getAllProducts,
+  deleteProducts,
+  deleteAllProducts,
+} from '@/lib/db-supabase'
 
 // GET /api/products — List all products with prices
 export async function GET() {
   try {
-    const products = await db.product.findMany({
-      include: { prices: true },
-      orderBy: { updatedAt: 'desc' },
-    })
+    const products = await getAllProducts()
 
     const formatted = products.map((p) => ({
       id: p.id,
       asin: p.asin,
       name: p.name,
       image: p.image,
-      lastScan: p.updatedAt.toISOString(),
+      lastScan: p.updatedAt,
       prices: Object.fromEntries(
-        p.prices.map((pr) => [
+        (p.prices || []).map((pr) => [
           pr.region,
           {
             price: pr.price,
             currency: pr.currency,
             priceDisplay: pr.priceDisplay,
             domain: pr.domain,
-            updatedAt: pr.updatedAt.toISOString(),
+            updatedAt: pr.updatedAt,
           },
         ])
       ),
     }))
 
     return NextResponse.json({ success: true, data: formatted, total: formatted.length })
-  } catch (e) {
+  } catch (e: unknown) {
     console.error('[Products API Error]:', e)
+    const message = e instanceof Error ? e.message : String(e)
+    // Check if the error is about missing tables
+    if (message && (message.includes('Could not find the table') || message.includes('does not exist'))) {
+      return NextResponse.json({
+        error: 'Database tables not found. Please run the SQL migration in the Supabase Dashboard SQL Editor.',
+        needsSetup: true,
+      }, { status: 500 })
+    }
     return NextResponse.json({ error: 'Failed to fetch products' }, { status: 500 })
   }
 }
@@ -43,14 +52,12 @@ export async function DELETE(request: NextRequest) {
     const { ids, all } = body
 
     if (all) {
-      await db.price.deleteMany()
-      await db.product.deleteMany()
+      await deleteAllProducts()
       return NextResponse.json({ success: true, deleted: 'all' })
     }
 
     if (ids && Array.isArray(ids) && ids.length > 0) {
-      await db.price.deleteMany({ where: { productId: { in: ids } } })
-      await db.product.deleteMany({ where: { id: { in: ids } } })
+      await deleteProducts(ids)
       return NextResponse.json({ success: true, deleted: ids.length })
     }
 
