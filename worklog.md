@@ -79,3 +79,28 @@ Stage Summary:
 - Real-time progress log shows status of each ASIN
 - Stop button allows aborting mid-scan
 - App is fully functional with real Amazon AOD data extraction
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: Add Historical Data page with Excel export for all data
+
+Work Log:
+- Added xlsx package for Excel file generation
+- Rebuilt export API (/api/export) to support both xlsx and csv formats via query param
+- Excel export creates 2 sheets: Summary (one row per product with all region prices) and Detailed (one row per product-region combination)
+- Added Historical Data view with:
+  - 4 stats cards: Total Products, With Prices, Price Rows, Regions Active
+  - Search/filter bar (search by ASIN, product name, or price)
+  - Sortable columns (click header to sort by ASIN, name, region prices, last scan)
+  - Select all / individual select with delete capability
+  - EXPORT EXCEL button (green, prominent) + CSV button
+  - Sticky table header with scroll
+- Verified all endpoints work: Page 200, API 200, Excel export 200, CSV export 200
+- Excel file confirmed: valid Microsoft Excel 2007+ format, ~21KB
+
+Stage Summary:
+- Historical Data page is fully functional with search, sort, select, delete
+- Excel export generates professional .xlsx with Summary and Detailed sheets
+- CSV export also available as fallback
+- Both Live Monitor and Historical Data views share same database
