@@ -1,9 +1,13 @@
 /**
- * Amazon Offer Listing Price Crawler — Direct Crawleo API (TypeScript)
+ * Amazon Offer Listing Price Crawler — z-ai-web-dev-sdk page_reader (TypeScript)
  *
  * ALL prices come from the Offer Listing page (All Offers Display) ONLY.
- * Calls Crawleo API (https://api.crawleo.dev/crawl) directly from TypeScript
- * to fetch offer listing pages with JavaScript rendering and correct geolocation.
+ * Uses z-ai-web-dev-sdk's page_reader function to fetch offer listing pages
+ * with full HTML content (including JS-rendered prices).
+ *
+ * Previous Crawleo API approach has been replaced because the sandbox API key
+ * expired ("sandbox is inactive" error). The z-ai-web-dev-sdk page_reader
+ * provides the same functionality without needing an external API key.
  *
  * CRITICAL RULES:
  * - Prices MUST come from Offer Listing / AOD page ONLY
@@ -83,22 +87,20 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   AED: 'AED ',
 }
 
-const CRAWLEO_API_URL = 'https://api.crawleo.dev/crawl'
-
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // CRAWL RESULT TYPE
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export interface CrawlDebugInfo {
   url: string                // The URL that was fetched
-  crawleoHttpStatus: number  // HTTP status from Crawleo API
+  fetchMethod: string        // 'page_reader' or 'crawleo'
   pageStatusCode: number     // HTTP status of the crawled page
   htmlSize: number           // Size of raw HTML response
-  markdownSize: number       // Size of markdown response
-  credits: number            // Crawleo credits used
+  markdownSize: number       // Size of markdown response (0 for page_reader)
+  credits: number            // API credits used (0 for page_reader)
   timingMs: number           // Time taken for this crawl
   retryCount: number         // Number of retries
-  errorMsg: string           // Error from Crawleo if any
+  errorMsg: string           // Error if any
   aodOfferCount: number      // AOD offer count found
   aPriceCount: number        // Number of a-price elements found
   parseStrategy: string      // Which parse strategy found the price
@@ -119,8 +121,82 @@ export interface CrawlResult {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWLEO API FETCH
+// PAGE READER FETCH (z-ai-web-dev-sdk)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+interface PageReaderResult {
+  html: string
+  title: string
+  errorMsg: string
+  retryCount: number
+}
+
+// Lazy-initialized ZAI singleton
+let _zaiInstance: any = null
+
+async function getZAI() {
+  if (!_zaiInstance) {
+    const ZAI = (await import('z-ai-web-dev-sdk')).default
+    _zaiInstance = await ZAI.create()
+  }
+  return _zaiInstance
+}
+
+async function fetchWithPageReader(
+  url: string,
+  maxRetries = 2
+): Promise<PageReaderResult> {
+  let lastErrorMsg = ''
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        console.log(`[PageReader] Retry attempt ${attempt} for: ${url}`)
+        await new Promise((r) => setTimeout(r, 2000 * attempt))
+      } else {
+        console.log(`[PageReader] Fetching: ${url}`)
+      }
+
+      const zai = await getZAI()
+      const result = await zai.functions.invoke('page_reader', { url })
+
+      // Check response structure
+      if (!result || !result.data) {
+        lastErrorMsg = 'Page reader returned no data'
+        console.error(`[PageReader] No data returned (attempt ${attempt + 1}/${maxRetries + 1})`)
+        if (attempt < maxRetries) continue
+        return { html: '', title: '', errorMsg: lastErrorMsg, retryCount: attempt }
+      }
+
+      const html = result.data.html || ''
+      const title = result.data.title || ''
+
+      if (!html) {
+        lastErrorMsg = 'Page reader returned empty HTML'
+        console.error(`[PageReader] Empty HTML (attempt ${attempt + 1}/${maxRetries + 1})`)
+        if (attempt < maxRetries) continue
+        return { html: '', title: '', errorMsg: lastErrorMsg, retryCount: attempt }
+      }
+
+      console.log(`[PageReader] Success! HTML: ${html.length} chars, title: ${title}`)
+      return { html, title, errorMsg: '', retryCount: attempt }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      lastErrorMsg = `PageReader error: ${msg}`
+      console.error(`[PageReader] Error (attempt ${attempt + 1}/${maxRetries + 1}): ${msg}`)
+      if (attempt < maxRetries) continue
+      return { html: '', title: '', errorMsg: lastErrorMsg, retryCount: attempt }
+    }
+  }
+
+  return { html: '', title: '', errorMsg: lastErrorMsg || 'Max retries exceeded', retryCount: maxRetries }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CRAWLEO API FETCH (FALLBACK — kept for backward compatibility)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const CRAWLEO_API_URL = 'https://api.crawleo.dev/crawl'
 
 interface CrawleoResult {
   raw_html: string
@@ -181,17 +257,16 @@ async function fetchWithCrawleo(
 
         // Special handling for "sandbox is inactive" — retry with longer delay
         if (body.includes('sandbox is inactive')) {
-          const sandboxDelay = 5000 * (attempt + 1) // 5s, 10s, 15s
+          const sandboxDelay = 5000 * (attempt + 1)
           console.log(`[Crawleo] Sandbox inactive detected, waiting ${sandboxDelay}ms before retry...`)
           if (attempt < maxRetries) {
             await new Promise((r) => setTimeout(r, sandboxDelay))
             continue
           }
-          lastErrorMsg = `Crawleo API "sandbox is inactive" — This usually means: (1) Your API plan's sandbox/free tier has expired or been paused, (2) Rate limit hit, or (3) Temporary Crawleo infrastructure issue. Try again in a few minutes or check your Crawleo dashboard.`
+          lastErrorMsg = `Crawleo API "sandbox is inactive" — Your API plan's sandbox/free tier has expired or been paused. Use the built-in page_reader method instead (no API key needed).`
         }
 
         if (attempt < maxRetries) continue
-        // Return partial result with debug info even on failure
         return {
           raw_html: '', enhanced_html: '', markdown: '',
           debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: 0, credits: 0, errorMsg: lastErrorMsg, retryCount: attempt }
@@ -201,24 +276,13 @@ async function fetchWithCrawleo(
       const data = await response.json()
       lastCredits = data.credits ?? 0
 
-      // Handle JSON-level errors (e.g. {"error":"sandbox is inactive"} returned with HTTP 200)
       if (data.error) {
         const errMsg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error)
         lastErrorMsg = `Crawleo API error: ${errMsg}`
-
-        if (errMsg.includes('sandbox is inactive')) {
-          const sandboxDelay = 5000 * (attempt + 1)
-          console.log(`[Crawleo] Sandbox inactive (JSON) detected, waiting ${sandboxDelay}ms before retry...`)
-          if (attempt < maxRetries) {
-            await new Promise((r) => setTimeout(r, sandboxDelay))
-            continue
-          }
-          lastErrorMsg = `Crawleo "sandbox is inactive" — Your API plan's sandbox may be expired/paused, or rate limited. Check your Crawleo dashboard or try again later.`
-        } else if (attempt < maxRetries) {
+        if (attempt < maxRetries) {
           await new Promise((r) => setTimeout(r, 2000 * attempt))
           continue
         }
-
         return {
           raw_html: '', enhanced_html: '', markdown: '',
           debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: 0, credits: lastCredits, errorMsg: lastErrorMsg, retryCount: attempt }
@@ -227,7 +291,6 @@ async function fetchWithCrawleo(
 
       if (!data.results || data.results.length === 0) {
         lastErrorMsg = 'Crawleo returned no results'
-        console.error(`[Crawleo] No results returned`)
         if (attempt < maxRetries) continue
         return {
           raw_html: '', enhanced_html: '', markdown: '',
@@ -242,22 +305,10 @@ async function fetchWithCrawleo(
       lastErrorMsg = errorMsg
 
       if (errorMsg) {
-        console.error(`[Crawleo] Error in result: ${errorMsg}`)
         if (attempt < maxRetries) continue
-        // Return with page status and error info even if error
         return {
           raw_html: result.raw_html ?? '', enhanced_html: result.enhanced_html ?? '', markdown: result.markdown ?? '',
           debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: statusCode, credits: lastCredits, errorMsg, retryCount: attempt }
-        }
-      }
-
-      if (![200, 404].includes(statusCode)) {
-        lastErrorMsg = `Page returned HTTP ${statusCode}`
-        console.error(`[Crawleo] Page status: ${statusCode}`)
-        if (attempt < maxRetries) continue
-        return {
-          raw_html: result.raw_html ?? '', enhanced_html: result.enhanced_html ?? '', markdown: result.markdown ?? '',
-          debug: { crawleoHttpStatus: lastCrawleoStatus, pageStatusCode: statusCode, credits: lastCredits, errorMsg: lastErrorMsg, retryCount: attempt }
         }
       }
 
@@ -648,7 +699,6 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
   }
 
   // ── Check for truly no offers ──
-  // On offer-listing pages, check for AOD-style offer count AND general no-offer indicators
   const offerCountMatch =
     htmlClean.match(/id="aod-total-offer-count"[^>]*value="(\d+)"/) ??
     htmlClean.match(/value="(\d+)"[^>]*id="aod-total-offer-count"/)
@@ -726,10 +776,17 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
   }
 
   // ━━━ Strategy 3: a-offscreen text ━━━
+  // a-offscreen can contain both prices and non-price content (product names, etc.)
+  // We must require an explicit currency indicator to avoid false matches
+  const CURRENCY_INDICATORS = /[\$€£]|\b(USD|EUR|GBP|EGP|SAR|AED)\b|\u062c\u0646\u064a\u0647|\u0631\u064a\u0627\u0644|\u062f\u0631\u0647\u0645|\u062c\.\u0645|\u0631\.\u0633|\u062f\.\u0625/i
   const aOffscreenRegex = /<span[^>]*class="[^"]*a-offscreen[^"]*"[^>]*>\s*([^<]+?)\s*<\/span>/g
   let offscreenMatch: RegExpExecArray | null
   while ((offscreenMatch = aOffscreenRegex.exec(htmlClean)) !== null) {
     const priceText = offscreenMatch[1].trim()
+    // Skip text that doesn't contain a currency indicator (e.g. product names like "Apple 2022 iPad Air")
+    if (!CURRENCY_INDICATORS.test(priceText)) {
+      continue
+    }
     const priceResult = extractPriceFromText(priceText, defaultCurrency)
     if (priceResult) {
       try {
@@ -767,17 +824,16 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWL ONE REGION — Direct Crawleo API Call
+// CRAWL ONE REGION — Primary: z-ai page_reader, Fallback: Crawleo API
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /**
- * Crawl a single ASIN on a single region using the Crawleo API directly.
+ * Crawl a single ASIN on a single region.
  *
- * 1. Fetch the AOD AJAX endpoint: /gp/product/ajax/aodAjaxMain/?asin={ASIN}
- * 2. Parse the HTML/markdown response for prices
- * 3. Extract price from various patterns (€10,63, $20.25, SAR 113.38, etc.)
+ * Uses z-ai-web-dev-sdk's page_reader by default (no API key needed).
+ * Falls back to Crawleo API if crawleoApiKey is provided.
  *
- * Prices come from AOD ONLY. If no offers → N/A.
+ * Prices come from Offer Listing page ONLY. If no offers → N/A.
  */
 export async function crawlRegion(
   asin: string,
@@ -810,102 +866,108 @@ export async function crawlRegion(
     asin,
   }
 
-  if (!crawleoApiKey) {
-    return { ...na, error: 'Crawleo API key is required' }
-  }
-
   // Initialize the detailed log builder
   const { CrawlLogBuilder, addLog } = await import('./crawl-logger')
   const logBuilder = new CrawlLogBuilder(asin, regionKey)
 
   try {
-    console.log(`[crawlRegion] Crawling ${asin} on ${region.domain} via Crawleo...`)
+    console.log(`[crawlRegion] Crawling ${asin} on ${region.domain}...`)
     const startTime = Date.now()
 
-    // Build offer-listing URL — this shows all seller offers (same as AOD)
-    // The AOD AJAX endpoint returns 404 via Crawleo, so we use /gp/offer-listing/ instead
-    // which contains the same data in a standalone page
+    // Build offer-listing URL
     const offerPath = region.offerListingPath || '/gp/offer-listing/'
     const url = `https://www.${region.domain}${offerPath}${asin}`
 
-    // Build Crawleo API URL for logging
-    const crawleoParams = new URLSearchParams({
-      urls: url,
-      render_js: 'true',
-      raw_html: 'true',
-      enhanced_html: 'true',
-      markdown: 'true',
-    })
-    if (region.geo) crawleoParams.set('geolocation', region.geo)
-    const crawleoFullUrl = `${CRAWLEO_API_URL}?${crawleoParams.toString()}`
-
     // Log request details
     logBuilder.setRequest({
-      crawleoApiUrl: crawleoFullUrl,
+      crawleoApiUrl: crawleoApiKey ? `${CRAWLEO_API_URL}?urls=${url}` : 'z-ai page_reader',
       targetUrl: url,
       geolocation: region.geo,
-      apiKey: crawleoApiKey,
+      apiKey: crawleoApiKey || '(page_reader - no key needed)',
     })
 
-    console.log(`[crawlRegion] Request: URL=${url}, geo=${region.geo}, apikey=${crawleoApiKey.slice(0, 8)}...`)
+    console.log(`[crawlRegion] Request: URL=${url}, method=${crawleoApiKey ? 'Crawleo' : 'page_reader'}`)
 
-    // Fetch via Crawleo API with JavaScript rendering and geolocation
-    const crawleoResult = await fetchWithCrawleo(url, crawleoApiKey, region.geo)
+    let rawHtml = ''
+    let markdown = ''
+    let fetchMethod = 'page_reader'
+    let errorMsg = ''
+    let retryCount = 0
+    let pageStatusCode = 200
+    let credits = 0
+
+    // ── Primary: Use z-ai-web-dev-sdk page_reader (no API key needed) ──
+    if (!crawleoApiKey) {
+      const prResult = await fetchWithPageReader(url)
+      rawHtml = prResult.html
+      errorMsg = prResult.errorMsg
+      retryCount = prResult.retryCount
+      fetchMethod = 'page_reader'
+
+      // page_reader returns HTML content directly — no separate markdown
+      // We can generate a simple text version from the HTML for markdown-based parsing
+      markdown = rawHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 5000)
+    } else {
+      // ── Fallback: Use Crawleo API (if API key provided) ──
+      const crawleoResult = await fetchWithCrawleo(url, crawleoApiKey, region.geo)
+      fetchMethod = 'crawleo'
+      pageStatusCode = crawleoResult?.debug?.pageStatusCode ?? 0
+      credits = crawleoResult?.debug?.credits ?? 0
+      retryCount = crawleoResult?.debug?.retryCount ?? 0
+      errorMsg = crawleoResult?.debug?.errorMsg ?? ''
+
+      if (crawleoResult && crawleoResult.raw_html) {
+        rawHtml = crawleoResult.raw_html || crawleoResult.enhanced_html
+        markdown = crawleoResult.markdown || ''
+      }
+    }
+
     const timingMs = Date.now() - startTime
 
     // Log response details
     logBuilder.setResponse({
-      crawleoHttpStatus: crawleoResult?.debug?.crawleoHttpStatus ?? 0,
-      pageStatusCode: crawleoResult?.debug?.pageStatusCode ?? 0,
-      credits: crawleoResult?.debug?.credits ?? 0,
-      retryCount: crawleoResult?.debug?.retryCount ?? 0,
+      crawleoHttpStatus: fetchMethod === 'crawleo' ? pageStatusCode : 200,
+      pageStatusCode: pageStatusCode,
+      credits: credits,
+      retryCount: retryCount,
       timingMs,
-      errorMsg: crawleoResult?.debug?.errorMsg ?? '',
+      errorMsg: errorMsg,
     })
 
-    console.log(`[crawlRegion] Crawleo response: status=${crawleoResult?.debug?.crawleoHttpStatus}, page=${crawleoResult?.debug?.pageStatusCode}, html=${(crawleoResult?.raw_html ?? '').length} chars, time=${timingMs}ms`)
+    console.log(`[crawlRegion] Response: method=${fetchMethod}, html=${rawHtml.length} chars, md=${markdown.length} chars, time=${timingMs}ms`)
 
     const debugBase: CrawlDebugInfo = {
       url,
-      crawleoHttpStatus: crawleoResult?.debug?.crawleoHttpStatus ?? 0,
-      pageStatusCode: crawleoResult?.debug?.pageStatusCode ?? 0,
-      htmlSize: (crawleoResult?.raw_html ?? '').length,
-      markdownSize: (crawleoResult?.markdown ?? '').length,
-      credits: crawleoResult?.debug?.credits ?? 0,
+      fetchMethod,
+      pageStatusCode,
+      htmlSize: rawHtml.length,
+      markdownSize: markdown.length,
+      credits,
       timingMs,
-      retryCount: crawleoResult?.debug?.retryCount ?? 0,
-      errorMsg: crawleoResult?.debug?.errorMsg ?? '',
+      retryCount,
+      errorMsg,
       aodOfferCount: -1,
       aPriceCount: -1,
       parseStrategy: '',
       rawPriceText: '',
     }
 
-    if (!crawleoResult) {
-      logBuilder.setResult('N/A', 'N/A', 'Failed to fetch offer listing page from Crawleo')
+    if (!rawHtml) {
+      const errMsg = errorMsg || 'Failed to fetch offer listing page'
+      logBuilder.setResult('N/A', 'N/A', errMsg)
       addLog(logBuilder.build())
-      return { ...na, error: 'Failed to fetch offer listing page from Crawleo', debug: debugBase }
+      return { ...na, error: errMsg, debug: debugBase }
     }
-
-    // If Crawleo returned an error (like sandbox inactive), include it
-    if (crawleoResult.debug?.errorMsg && !crawleoResult.raw_html) {
-      logBuilder.setResult('N/A', 'N/A', crawleoResult.debug.errorMsg)
-      addLog(logBuilder.build())
-      return { ...na, error: crawleoResult.debug.errorMsg, debug: debugBase }
-    }
-
-    // Parse the Crawleo response — prefer raw_html for accurate price extraction
-    const htmlForParsing = crawleoResult.raw_html || crawleoResult.enhanced_html
 
     // Log content analysis
-    logBuilder.setContent(htmlForParsing, crawleoResult.markdown)
+    logBuilder.setContent(rawHtml, markdown)
 
-    console.log(`[crawlRegion] Content analysis: htmlSize=${htmlForParsing.length}, mdSize=${crawleoResult.markdown.length}`)
+    console.log(`[crawlRegion] Content analysis: htmlSize=${rawHtml.length}, mdSize=${markdown.length}`)
 
-    const parsed = parsePrice(htmlForParsing, crawleoResult.markdown, regionKey)
+    const parsed = parsePrice(rawHtml, markdown, regionKey)
 
     // Log parsing details with step-by-step strategy attempts
-    const strategyLog = buildStrategyLog(htmlForParsing, crawleoResult.markdown, regionKey, parsed)
+    const strategyLog = buildStrategyLog(rawHtml, markdown, regionKey, parsed)
     logBuilder.setParsing({
       strategy: parsed.parseStrategy,
       rawPriceText: parsed.rawPriceText,
@@ -1041,33 +1103,4 @@ function buildStrategyLog(html: string, markdown: string, regionKey: string, par
   })
 
   return logs
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWL ACROSS MULTIPLE REGIONS
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/**
- * Crawl a single ASIN across all specified regions.
- * Regions are processed SEQUENTIALLY with a small delay between each
- * to avoid rate limiting.
- */
-export async function crawlAsin(
-  asin: string,
-  regionKeys: string[] = Object.keys(REGIONS),
-  crawleoApiKey?: string
-): Promise<CrawlResult[]> {
-  const results: CrawlResult[] = []
-
-  for (const key of regionKeys) {
-    const result = await crawlRegion(asin, key, crawleoApiKey)
-    results.push(result)
-
-    // Small delay between regions to avoid rate limiting
-    if (regionKeys.indexOf(key) < regionKeys.length - 1) {
-      await new Promise((r) => setTimeout(r, 500))
-    }
-  }
-
-  return results
 }

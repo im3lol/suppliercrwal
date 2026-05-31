@@ -8,10 +8,11 @@ import {
 } from '@/lib/db-supabase'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// AOD CRAWLER API — Pure TypeScript + Supabase
+// AOD CRAWLER API — z-ai-web-dev-sdk page_reader + Supabase
 //
-// Crawl ASIN on a single region via Crawleo API directly.
-// Uses aod-crawler.ts which calls Crawleo API and parses AOD HTML.
+// Crawl ASIN on a single region.
+// Uses z-ai-web-dev-sdk's page_reader by default (no API key needed).
+// Falls back to Crawleo API if crawleoApiKey is provided.
 // Results are saved to Supabase (PostgreSQL).
 //
 // CRITICAL RULES:
@@ -33,7 +34,7 @@ interface CrawlResultItem {
   error?: string
   debug?: {
     url: string
-    crawleoHttpStatus: number
+    fetchMethod: string
     pageStatusCode: number
     htmlSize: number
     markdownSize: number
@@ -59,16 +60,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Valid ASIN required' }, { status: 400 })
     }
 
-    if (!crawleoApiKey) {
-      return NextResponse.json({ error: 'Crawleo API key required' }, { status: 400 })
-    }
-
     const regionKey = (region || 'COM').trim().toUpperCase()
 
-    console.log(`[Crawl API] Crawling ${cleanAsin} on ${regionKey} via Crawleo (TypeScript)...`)
+    // crawleoApiKey is now optional — page_reader is used by default
+    const method = crawleoApiKey ? 'Crawleo' : 'page_reader'
+    console.log(`[Crawl API] Crawling ${cleanAsin} on ${regionKey} via ${method}...`)
 
-    // Call TypeScript crawler directly — no Python subprocess needed!
-    const result: CrawlResultItem = await crawlRegion(cleanAsin, regionKey, crawleoApiKey)
+    // Call TypeScript crawler — page_reader by default, Crawleo if API key provided
+    const result: CrawlResultItem = await crawlRegion(cleanAsin, regionKey, crawleoApiKey || undefined)
 
     // Save to Supabase
     await saveResultsToDB(cleanAsin, [result])

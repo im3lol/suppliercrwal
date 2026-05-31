@@ -275,14 +275,8 @@ export default function Home() {
       return
     }
 
-    if (!crawleoApiKey) {
-      toast({
-        title: 'API Key Required',
-        description: 'Enter your Crawleo API key to fetch AOD prices',
-        variant: 'destructive',
-      })
-      return
-    }
+    // API key is now optional — page_reader is used by default
+    // Crawleo API key is only needed as a fallback method
 
     setIsCrawling(true)
     abortRef.current = false
@@ -353,7 +347,7 @@ export default function Home() {
             body: JSON.stringify({
               asin,
               region: regionKey,
-              crawleoApiKey,
+              crawleoApiKey: crawleoApiKey || undefined,
             }),
           })
 
@@ -866,7 +860,7 @@ export default function Home() {
                       </Button>
                     )}
                     <div className="text-[10px] text-gray-600 ml-2">
-                      1 request per region • ~15s per region • AOD-only prices
+                      Built-in page reader • 1 request per region • AOD-only prices
                     </div>
                   </div>
                 </div>
@@ -1430,7 +1424,7 @@ export default function Home() {
               <section className="bg-[#111111] rounded-lg border border-[#1a1a1a] overflow-hidden">
                 <div className="flex items-center gap-2 px-4 py-3 border-b border-[#1a1a1a]">
                   <Shield className="w-4 h-4 text-orange-400" />
-                  <h2 className="text-xs font-bold tracking-wider">CRAWLEO API KEY</h2>
+                  <h2 className="text-xs font-bold tracking-wider">API CONFIG (OPTIONAL FALLBACK)</h2>
                   {crawleoApiKey && !apiKeySaved && (
                     <span className="text-[9px] text-green-400 flex items-center gap-1 ml-2">
                       <CheckCircle2 className="w-3 h-3" /> Active
@@ -1443,8 +1437,15 @@ export default function Home() {
                   )}
                 </div>
                 <div className="p-5 space-y-4">
+                  <div className="bg-green-500/10 border border-green-500/30 rounded-md p-3 mb-3">
+                    <p className="text-xs text-green-400 font-bold mb-1">✅ Built-in Page Reader Active</p>
+                    <p className="text-xs text-gray-400">
+                      The app now uses a built-in page reader (no API key needed!) to fetch Amazon offer-listing pages. 
+                      A Crawleo API key is only needed as an optional fallback method.
+                    </p>
+                  </div>
                   <p className="text-xs text-gray-400">
-                    The Crawleo API key is required to fetch Amazon AOD (All Offers Display) pages. 
+                    Optional: Enter a Crawleo API key to use as a fallback crawling method. 
                     Your key is saved in your browser's local storage and persists across sessions.
                   </p>
                   <div className="space-y-2">
@@ -1484,7 +1485,10 @@ export default function Home() {
                   </div>
 
                   <div className="border-t border-[#1a1a1a] pt-4">
-                    <h3 className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">How to get your API key</h3>
+                    <h3 className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Optional: Crawleo API Key</h3>
+                    <p className="text-xs text-gray-500 mb-2">
+                      If you have a Crawleo API key, you can add it as a fallback method. This is <strong>not required</strong> — the built-in page reader works without any key.
+                    </p>
                     <ol className="text-xs text-gray-500 space-y-1.5 list-decimal ml-4">
                       <li>Visit <a href="https://crawleo.dev" target="_blank" rel="noopener noreferrer" className="text-orange-400 hover:underline">crawleo.dev</a> and sign up</li>
                       <li>Go to your dashboard and copy your API key</li>
