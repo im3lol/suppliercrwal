@@ -188,26 +188,53 @@ export default function Home() {
 
       setCrawlLog((prev) =>
         prev.map((entry, idx) =>
-          idx === i ? { ...entry, status: 'running', message: 'Scanning 5 regions...', time: ts() } : entry
+          idx === i ? { ...entry, status: 'running', message: 'Scanning 5 regions (sequential)...', time: ts() } : entry
         )
       )
 
       try {
-        const res = await fetch('/api/crawl', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ asins: [asin] }),
-        })
+        // Process regions one at a time to avoid server memory issues
+        const regionKeys = ['COM', 'EG', 'DE', 'SA', 'AE']
+        let pricesFound = 0
+        let lastError = ''
 
-        const data = await res.json()
+        for (let ri = 0; ri < regionKeys.length; ri++) {
+          if (abortRef.current) break
 
-        if (data.success && data.data && data.data.length > 0) {
-          const result = data.data[0]
-          const pricesFound = result.results
-            ? result.results.filter((r: { price: string }) => r.price !== 'N/A').length
-            : 0
-          totalPricesFound += pricesFound
+          const regionKey = regionKeys[ri]
+          setCrawlLog((prev) =>
+            prev.map((entry, idx) =>
+              idx === i ? { ...entry, status: 'running', message: `Scanning ${regionKey} (${ri + 1}/5)...`, time: ts() } : entry
+            )
+          )
 
+          const res = await fetch('/api/crawl', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ asins: [asin], regions: [regionKey] }),
+          })
+
+          const data = await res.json()
+
+          if (data.success && data.data && data.data.length > 0) {
+            const result = data.data[0]
+            const regionPrices = result.results
+              ? result.results.filter((r: { price: string }) => r.price !== 'N/A').length
+              : 0
+            pricesFound += regionPrices
+          } else {
+            lastError = data.error || 'Failed'
+          }
+
+          // Small delay between regions
+          if (ri < regionKeys.length - 1 && !abortRef.current) {
+            await new Promise((r) => setTimeout(r, 500))
+          }
+        }
+
+        totalPricesFound += pricesFound
+
+        if (pricesFound > 0 || !lastError) {
           setCrawlLog((prev) =>
             prev.map((entry, idx) =>
               idx === i
@@ -218,7 +245,7 @@ export default function Home() {
         } else {
           setCrawlLog((prev) =>
             prev.map((entry, idx) =>
-              idx === i ? { ...entry, status: 'error', message: data.error || 'Failed', time: ts() } : entry
+              idx === i ? { ...entry, status: 'error', message: lastError || 'Failed', time: ts() } : entry
             )
           )
         }
@@ -579,7 +606,7 @@ export default function Home() {
                       </Button>
                     )}
                     <div className="text-[10px] text-gray-600 ml-2">
-                      Sequential for-loop • 1.5s delay • 5 regions per ASIN
+                      Sequential regions • 1 region/request • AOD-only prices
                     </div>
                   </div>
                 </div>

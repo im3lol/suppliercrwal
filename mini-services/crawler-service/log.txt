@@ -1,0 +1,2 @@
+$ bun --hot index.ts
+[Crawler Service] Running on port 3031
