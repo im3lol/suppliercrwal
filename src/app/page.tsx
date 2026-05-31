@@ -1838,7 +1838,7 @@ export default function Home() {
               <span className="flex items-center gap-1"><MapPin className="w-3 h-3" /> 5 REGIONS</span>
               <span className="flex items-center gap-1"><Globe className="w-3 h-3" /> COM • EG • DE • SA • AE</span>
             </div>
-            <span className="text-gray-700">SupplierCrawl v1.0 — Bulk AOD Scanner</span>
+            <span className="text-gray-700">SupplierCrawl v1.1 — Bulk AOD Scanner + Debug Logs</span>
           </div>
         </footer>
       </main>
