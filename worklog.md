@@ -104,3 +104,31 @@ Stage Summary:
 - Excel export generates professional .xlsx with Summary and Detailed sheets
 - CSV export also available as fallback
 - Both Live Monitor and Historical Data views share same database
+
+---
+Task ID: 3
+Agent: Main Agent
+Task: Fix AOD price extraction — only selling price, never RRP/alternative prices
+
+Work Log:
+- Analyzed real AOD HTML from amazon.de for ASIN B0DJSW6BDG
+- Found the bug: a-offscreen regex was picking up RRP (€11.76) instead of selling price (€8.93)
+- Root cause: Amazon AOD has two price types:
+  1. Selling price (apex-pricetopay-value): whole=8, fraction=93, symbol=€ → €8.93
+  2. RRP/strikethrough (a-text-price with data-a-strike): a-offscreen=€11.76
+- Also found: a-price-decimal span nested inside a-price-whole broke digit extraction
+- Rewrote extractAodPrice() with these fixes:
+  - Only extract from pinned offer section (getPinnedOfferHtml)
+  - Never use prices from RRP/strikethrough blocks (isInsideRRP check)
+  - Strip HTML tags and non-digit chars from a-price-whole (handles nested decimal span)
+  - Search for a-price-symbol in a 200-char window BEFORE a-price-whole
+  - Fallback to a-offscreen only if not inside RRP block
+- Added isInsideRRP() that detects: a-text-price, data-a-strike, apex-basisprice-value, basispricelegalmessage
+- Tested: B0DJSW6BDG DE now correctly returns €8.93 (not €11.76)
+- Tested: B08LKLQP2N still works correctly across all regions
+
+Stage Summary:
+- Fixed critical bug: RRP/strikethrough prices no longer extracted
+- Only the actual SELLING price from AOD pinned offer is used
+- If no real offer exists → N/A (no fallback to alternative prices)
+- Applied fix across all 5 regions (COM, EG, DE, SA, AE)
