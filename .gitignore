@@ -37,7 +37,6 @@ yarn-error.log*
 # vercel
 .vercel
 
-
 # typescript
 *.tsbuildinfo
 next-env.d.ts
@@ -49,8 +48,8 @@ dev.log
 dev.out.log
 test
 prompt
-
 server.log
+
 # Skills directory
 /skills/
 
@@ -65,3 +64,16 @@ server.log
 
 # Work log
 worklog.md
+
+# Z.ai internal
+.zscripts/
+agent-ctx/
+keep-alive.sh
+examples/
+scripts/
+
+# Caddy (deployment specific)
+Caddyfile
+
+# Download folder
+/download/

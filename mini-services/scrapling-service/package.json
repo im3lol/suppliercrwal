@@ -1,8 +1,0 @@
-{
-  "name": "scrapling-aod-service",
-  "version": "1.0.0",
-  "description": "Scrapling-based Amazon AOD AJAX crawler service",
-  "scripts": {
-    "dev": "python3 index.py"
-  }
-}
