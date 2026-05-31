@@ -193,7 +193,8 @@ async function fetchWithPageReader(
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWLEO API FETCH (FALLBACK — kept for backward compatibility)
+// CRAWLEO API FETCH (DEPRECATED — sandbox inactive, no longer used)
+// This code is kept for reference but is never called anymore.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const CRAWLEO_API_URL = 'https://api.crawleo.dev/crawl'
@@ -824,21 +825,21 @@ function parsePrice(rawHtml: string, markdown: string, regionKey: string): Parse
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CRAWL ONE REGION — Primary: z-ai page_reader, Fallback: Crawleo API
+// CRAWL ONE REGION — z-ai page_reader only (Crawleo removed)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /**
  * Crawl a single ASIN on a single region.
  *
- * Uses z-ai-web-dev-sdk's page_reader by default (no API key needed).
- * Falls back to Crawleo API if crawleoApiKey is provided.
+ * Uses z-ai-web-dev-sdk's page_reader exclusively (no API key needed).
+ * Crawleo API has been removed because the sandbox is inactive.
  *
  * Prices come from Offer Listing page ONLY. If no offers → N/A.
  */
 export async function crawlRegion(
   asin: string,
   regionKey: string,
-  crawleoApiKey?: string
+  _crawleoApiKey?: string  // kept for API compatibility but ignored
 ): Promise<CrawlResult> {
   const region = REGIONS[regionKey]
   if (!region) {
@@ -880,69 +881,50 @@ export async function crawlRegion(
 
     // Log request details
     logBuilder.setRequest({
-      crawleoApiUrl: crawleoApiKey ? `${CRAWLEO_API_URL}?urls=${url}` : 'z-ai page_reader',
+      crawleoApiUrl: 'z-ai page_reader (Crawleo removed — sandbox inactive)',
       targetUrl: url,
       geolocation: region.geo,
-      apiKey: crawleoApiKey || '(page_reader - no key needed)',
+      apiKey: '(page_reader - no key needed)',
     })
 
-    console.log(`[crawlRegion] Request: URL=${url}, method=${crawleoApiKey ? 'Crawleo' : 'page_reader'}`)
+    console.log(`[crawlRegion] Request: URL=${url}, method=page_reader`)
 
     let rawHtml = ''
     let markdown = ''
-    let fetchMethod = 'page_reader'
     let errorMsg = ''
     let retryCount = 0
-    let pageStatusCode = 200
-    let credits = 0
 
-    // ── Primary: Use z-ai-web-dev-sdk page_reader (no API key needed) ──
-    if (!crawleoApiKey) {
-      const prResult = await fetchWithPageReader(url)
-      rawHtml = prResult.html
-      errorMsg = prResult.errorMsg
-      retryCount = prResult.retryCount
-      fetchMethod = 'page_reader'
+    // ── Always use z-ai-web-dev-sdk page_reader (no API key needed) ──
+    const prResult = await fetchWithPageReader(url)
+    rawHtml = prResult.html
+    errorMsg = prResult.errorMsg
+    retryCount = prResult.retryCount
 
-      // page_reader returns HTML content directly — no separate markdown
-      // We can generate a simple text version from the HTML for markdown-based parsing
-      markdown = rawHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 5000)
-    } else {
-      // ── Fallback: Use Crawleo API (if API key provided) ──
-      const crawleoResult = await fetchWithCrawleo(url, crawleoApiKey, region.geo)
-      fetchMethod = 'crawleo'
-      pageStatusCode = crawleoResult?.debug?.pageStatusCode ?? 0
-      credits = crawleoResult?.debug?.credits ?? 0
-      retryCount = crawleoResult?.debug?.retryCount ?? 0
-      errorMsg = crawleoResult?.debug?.errorMsg ?? ''
-
-      if (crawleoResult && crawleoResult.raw_html) {
-        rawHtml = crawleoResult.raw_html || crawleoResult.enhanced_html
-        markdown = crawleoResult.markdown || ''
-      }
-    }
+    // page_reader returns HTML content directly — no separate markdown
+    // We can generate a simple text version from the HTML for markdown-based parsing
+    markdown = rawHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 5000)
 
     const timingMs = Date.now() - startTime
 
     // Log response details
     logBuilder.setResponse({
-      crawleoHttpStatus: fetchMethod === 'crawleo' ? pageStatusCode : 200,
-      pageStatusCode: pageStatusCode,
-      credits: credits,
+      crawleoHttpStatus: 200,
+      pageStatusCode: 200,
+      credits: 0,
       retryCount: retryCount,
       timingMs,
       errorMsg: errorMsg,
     })
 
-    console.log(`[crawlRegion] Response: method=${fetchMethod}, html=${rawHtml.length} chars, md=${markdown.length} chars, time=${timingMs}ms`)
+    console.log(`[crawlRegion] Response: method=page_reader, html=${rawHtml.length} chars, md=${markdown.length} chars, time=${timingMs}ms`)
 
     const debugBase: CrawlDebugInfo = {
       url,
-      fetchMethod,
-      pageStatusCode,
+      fetchMethod: 'page_reader',
+      pageStatusCode: 200,
       htmlSize: rawHtml.length,
       markdownSize: markdown.length,
-      credits,
+      credits: 0,
       timingMs,
       retryCount,
       errorMsg,

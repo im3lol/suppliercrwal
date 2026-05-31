@@ -11,8 +11,8 @@ import {
 // AOD CRAWLER API — z-ai-web-dev-sdk page_reader + Supabase
 //
 // Crawl ASIN on a single region.
-// Uses z-ai-web-dev-sdk's page_reader by default (no API key needed).
-// Falls back to Crawleo API if crawleoApiKey is provided.
+// Uses z-ai-web-dev-sdk's page_reader exclusively (no external API key needed).
+// Crawleo API has been removed (sandbox inactive error).
 // Results are saved to Supabase (PostgreSQL).
 //
 // CRITICAL RULES:
@@ -52,7 +52,7 @@ interface CrawlResultItem {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { asin, region, crawleoApiKey } = body
+    const { asin, region } = body
 
     const cleanAsin = (asin || '').trim().toUpperCase()
 
@@ -62,12 +62,11 @@ export async function POST(request: NextRequest) {
 
     const regionKey = (region || 'COM').trim().toUpperCase()
 
-    // crawleoApiKey is now optional — page_reader is used by default
-    const method = crawleoApiKey ? 'Crawleo' : 'page_reader'
-    console.log(`[Crawl API] Crawling ${cleanAsin} on ${regionKey} via ${method}...`)
+    // Always use page_reader — Crawleo API removed (sandbox inactive)
+    console.log(`[Crawl API] Crawling ${cleanAsin} on ${regionKey} via page_reader...`)
 
-    // Call TypeScript crawler — page_reader by default, Crawleo if API key provided
-    const result: CrawlResultItem = await crawlRegion(cleanAsin, regionKey, crawleoApiKey || undefined)
+    // Call TypeScript crawler — always uses page_reader (no external API needed)
+    const result: CrawlResultItem = await crawlRegion(cleanAsin, regionKey)
 
     // Save to Supabase
     await saveResultsToDB(cleanAsin, [result])

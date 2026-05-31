@@ -347,7 +347,8 @@ export default function Home() {
             body: JSON.stringify({
               asin,
               region: regionKey,
-              crawleoApiKey: crawleoApiKey || undefined,
+              // Always use page_reader (no Crawleo API key) — Crawleo sandbox is inactive
+              // crawleoApiKey is no longer sent to avoid the 'sandbox is inactive' error
             }),
           })
 
@@ -1420,96 +1421,65 @@ export default function Home() {
           ═══════════════════════════════════════════════════════════ */}
           {viewMode === 'settings' && (
             <>
-              {/* ── CRAWLEO API KEY ── */}
+              {/* ── CRAWLING METHOD ── */}
               <section className="bg-[#111111] rounded-lg border border-[#1a1a1a] overflow-hidden">
                 <div className="flex items-center gap-2 px-4 py-3 border-b border-[#1a1a1a]">
                   <Shield className="w-4 h-4 text-orange-400" />
-                  <h2 className="text-xs font-bold tracking-wider">API CONFIG (OPTIONAL FALLBACK)</h2>
-                  {crawleoApiKey && !apiKeySaved && (
-                    <span className="text-[9px] text-green-400 flex items-center gap-1 ml-2">
-                      <CheckCircle2 className="w-3 h-3" /> Active
-                    </span>
-                  )}
-                  {apiKeySaved && (
-                    <span className="text-[9px] text-green-300 flex items-center gap-1 ml-2 animate-pulse">
-                      <CheckCircle2 className="w-3 h-3" /> Saved!
-                    </span>
-                  )}
+                  <h2 className="text-xs font-bold tracking-wider">CRAWLING METHOD</h2>
+                  <span className="text-[9px] text-green-400 flex items-center gap-1 ml-2">
+                    <CheckCircle2 className="w-3 h-3" /> Active
+                  </span>
                 </div>
                 <div className="p-5 space-y-4">
                   <div className="bg-green-500/10 border border-green-500/30 rounded-md p-3 mb-3">
-                    <p className="text-xs text-green-400 font-bold mb-1">✅ Built-in Page Reader Active</p>
+                    <p className="text-xs text-green-400 font-bold mb-1">✅ Built-in Page Reader — No API Key Needed</p>
                     <p className="text-xs text-gray-400">
-                      The app now uses a built-in page reader (no API key needed!) to fetch Amazon offer-listing pages. 
-                      A Crawleo API key is only needed as an optional fallback method.
+                      The app uses a built-in page reader to fetch Amazon offer-listing pages directly.
+                      No external API key is required — everything works out of the box.
                     </p>
                   </div>
-                  <p className="text-xs text-gray-400">
-                    Optional: Enter a Crawleo API key to use as a fallback crawling method. 
-                    Your key is saved in your browser's local storage and persists across sessions.
-                  </p>
-                  <div className="space-y-2">
-                    <label className="text-[10px] text-gray-500 uppercase tracking-wider">API Key</label>
-                    <div className="flex items-center gap-3">
-                      <div className="flex-1 relative">
-                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-600">
-                          <Shield className="w-3.5 h-3.5" />
-                        </div>
-                        <input
-                          type="password"
-                          value={apiKeyDraft}
-                          onChange={(e) => setApiKeyDraft(e.target.value)}
-                          placeholder="sk_xxxxxxxx_xxxxxxxxxxxxxxxx"
-                          className="w-full bg-[#0a0a0a] border border-[#2a2a2a] text-gray-200 placeholder-gray-600 text-xs font-mono pl-9 pr-3 py-2.5 rounded-md focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 focus:outline-none"
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleSaveApiKey()
-                          }}
-                        />
-                      </div>
-                      <Button
-                        onClick={handleSaveApiKey}
-                        className="bg-orange-500 hover:bg-orange-600 text-black font-bold text-xs h-10 px-5 shrink-0"
-                        disabled={apiKeyDraft.trim() === crawleoApiKey}
-                      >
-                        {apiKeySaved ? (
-                          <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
-                        ) : null}
-                        {apiKeySaved ? 'SAVED' : 'SAVE KEY'}
-                      </Button>
-                    </div>
-                    {apiKeyDraft && (
-                      <p className="text-[10px] text-gray-600">
-                        Key: {apiKeyDraft.slice(0, 8)}{'•'.repeat(20)}{apiKeyDraft.slice(-4)}
-                      </p>
-                    )}
+                  <div className="bg-red-500/10 border border-red-500/30 rounded-md p-3">
+                    <p className="text-xs text-red-400 font-bold mb-1">⚠️ Crawleo API — Removed</p>
+                    <p className="text-xs text-gray-400">
+                      The previous Crawleo API integration has been disabled because the sandbox returned 
+                      &quot;sandbox is inactive&quot; error. The built-in page reader provides the same functionality 
+                      without needing an external service.
+                    </p>
                   </div>
-
                   <div className="border-t border-[#1a1a1a] pt-4">
-                    <h3 className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Optional: Crawleo API Key</h3>
-                    <p className="text-xs text-gray-500 mb-2">
-                      If you have a Crawleo API key, you can add it as a fallback method. This is <strong>not required</strong> — the built-in page reader works without any key.
-                    </p>
-                    <ol className="text-xs text-gray-500 space-y-1.5 list-decimal ml-4">
-                      <li>Visit <a href="https://crawleo.dev" target="_blank" rel="noopener noreferrer" className="text-orange-400 hover:underline">crawleo.dev</a> and sign up</li>
-                      <li>Go to your dashboard and copy your API key</li>
-                      <li>Paste it above and click <strong className="text-gray-300">Save Key</strong></li>
-                    </ol>
+                    <h3 className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">How it works</h3>
+                    <div className="space-y-2">
+                      <div className="flex items-start gap-2">
+                        <span className="text-orange-400 text-[10px] mt-0.5">01</span>
+                        <p className="text-xs text-gray-400">Enter ASINs and click <strong className="text-gray-200">Execute Bulk Scan</strong></p>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="text-orange-400 text-[10px] mt-0.5">02</span>
+                        <p className="text-xs text-gray-400">Page reader fetches offer-listing pages from each Amazon region</p>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="text-orange-400 text-[10px] mt-0.5">03</span>
+                        <p className="text-xs text-gray-400">Prices are extracted from the AOD (All Offers Display) only</p>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="text-orange-400 text-[10px] mt-0.5">04</span>
+                        <p className="text-xs text-gray-400">Results are saved and displayed in the dashboard</p>
+                      </div>
+                    </div>
                   </div>
-
                   <div className="flex items-center gap-3 border-t border-[#1a1a1a] pt-4">
                     <Button
                       variant="outline"
                       size="sm"
                       className="bg-transparent border-[#2a2a2a] text-gray-400 hover:text-gray-200 hover:border-[#3a3a3a] text-[10px] h-7"
                       onClick={() => {
-                        setApiKeyDraft('')
                         setCrawleoApiKey('')
                         localStorage.removeItem('crawleo_api_key')
-                        toast({ title: 'API Key Cleared', description: 'Key removed from storage' })
+                        toast({ title: 'Old API Key Cleared', description: 'Crawleo key removed (not needed)' })
                       }}
                     >
                       <Trash2 className="w-3 h-3 mr-1.5" />
-                      CLEAR KEY
+                      CLEAR OLD CRAWLEO KEY
                     </Button>
                     <Button
                       variant="outline"
@@ -1593,16 +1563,7 @@ export default function Home() {
               {f === 'all' ? 'ALL' : f === 'error' ? 'ERRORS' : f === 'success' ? 'FOUND' : 'N/A'}
             </button>
           ))}
-          <Button
-            variant="outline"
-            size="sm"
-            className={`bg-transparent border-orange-500/50 text-orange-400 hover:bg-orange-500/10 text-[10px] h-6 ${apiTestRunning ? 'opacity-50' : ''}`}
-            onClick={handleTestApiKey}
-            disabled={apiTestRunning}
-          >
-            {apiTestRunning ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Zap className="w-3 h-3 mr-1" />}
-            TEST API
-          </Button>
+          {/* Crawleo API test removed — page_reader is the only method now */}
           <Button
             variant="outline"
             size="sm"
