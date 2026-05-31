@@ -1,0 +1,6 @@
+{
+  "name": "crawl-service",
+  "scripts": {
+    "dev": "bun --hot index.ts"
+  }
+}

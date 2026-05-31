@@ -193,7 +193,8 @@ export default function Home() {
       )
 
       try {
-        // Process regions one at a time to avoid server memory issues
+        // Process regions one at a time to keep each crawl execution short
+        // and prevent memory issues with Chromium
         const regionKeys = ['COM', 'EG', 'DE', 'SA', 'AE']
         let pricesFound = 0
         let lastError = ''
@@ -226,9 +227,9 @@ export default function Home() {
             lastError = data.error || 'Failed'
           }
 
-          // Small delay between regions
+          // Delay between regions to let browser processes clean up
           if (ri < regionKeys.length - 1 && !abortRef.current) {
-            await new Promise((r) => setTimeout(r, 500))
+            await new Promise((r) => setTimeout(r, 2000))
           }
         }
 
